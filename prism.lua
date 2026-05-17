@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.5.3'
+addon.version = '0.5.4'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat & magic skill progress with effective level and min mob hints.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -113,22 +113,20 @@ local MAGIC_SKILL_IDS = { 33, 34, 35, 32, 36, 37, 38, 39 }
 -- FFXI chat color palette for the skillup-color picker. Each entry is a
 -- single-byte color code that AshitaCore can render in chat (\30<code>), paired
 -- with an approximate sRGB triple so we can draw clickable swatches in the
--- settings panel. The palette is calibrated against actual in-game rendering
--- (via /prism colortest) and cross-referenced with Ashita's chat.lua canonical
--- codes (chat.success=2, chat.warning=104, chat.error=68, chat.critical=76,
--- chat.message=106, chat.header bracket=81 / interior=6). Codes that render
--- as plain white (200, 121, 39, 65) are omitted -- they aren't distinct enough
--- to be useful as a color choice.
+-- settings panel. Calibrated empirically against HorizonXI's renderer via
+-- /prism colortest -- note that HorizonXI's palette diverges from retail
+-- Ashita stdlib (e.g. code 81 renders as violet here, not the bracket-yellow
+-- that libs/chat.lua suggests). Codes that render as plain white on HorizonXI
+-- (102, 200, 121, 39, 65) are omitted.
 local CHAT_PALETTE = {
     { code = 1,   name = 'white',   rgb = { 1.00, 1.00, 1.00 } },
     { code = 106, name = 'cream',   rgb = { 1.00, 0.92, 0.65 } },
-    { code = 81,  name = 'yellow',  rgb = { 1.00, 0.88, 0.30 } },
-    { code = 104, name = 'gold',    rgb = { 1.00, 0.75, 0.20 } },
+    { code = 104, name = 'yellow',  rgb = { 1.00, 0.95, 0.35 } },
     { code = 8,   name = 'orange',  rgb = { 1.00, 0.60, 0.25 } },
-    { code = 76,  name = 'redhot',  rgb = { 1.00, 0.30, 0.20 } },
-    { code = 68,  name = 'red',     rgb = { 1.00, 0.40, 0.55 } },
+    { code = 76,  name = 'salmon',  rgb = { 1.00, 0.55, 0.55 } },
+    { code = 68,  name = 'pink',    rgb = { 1.00, 0.55, 0.75 } },
     { code = 5,   name = 'magenta', rgb = { 1.00, 0.45, 1.00 } },
-    { code = 102, name = 'pink',    rgb = { 0.95, 0.55, 0.90 } },
+    { code = 81,  name = 'violet',  rgb = { 0.70, 0.50, 1.00 } },
     { code = 6,   name = 'cyan',    rgb = { 0.40, 0.95, 1.00 } },
     { code = 2,   name = 'green',   rgb = { 0.35, 1.00, 0.35 } },
 }
