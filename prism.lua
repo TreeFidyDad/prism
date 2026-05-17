@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.5.2'
+addon.version = '0.5.3'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat & magic skill progress with effective level and min mob hints.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -24,12 +24,12 @@ local default_config = T{
     show_capped  = false,    -- hide skills that are already at cap for current level
     persist_frac = true,     -- save fractional skill progress to disk; survives /logout
     chat_skillups = false,   -- enhanced chat line on skillup
-    -- FFXI chat color codes (0..255) for fractional skillup magnitude. The default
-    -- palette goes gray->cream->cyan so big skillups (0.3+) catch your eye and
-    -- 0.1s fade into the noise. Override via /prism settings.
-    chat_color_low  = 8,     -- color for 0.1 skillups (subtle)
-    chat_color_mid  = 106,   -- color for 0.2 skillups (default cream)
-    chat_color_high = 6,     -- color for 0.3+ skillups (highlight)
+    -- FFXI chat color codes (0..255) for fractional skillup magnitude. Defaults
+    -- form a subtle->loud ramp (cream->cyan->bright red) so 0.3s grab your eye
+    -- and 0.1s fade. Override via the swatch picker in /prism settings.
+    chat_color_low  = 106,   -- color for 0.1 skillups (cream, subtle)
+    chat_color_mid  = 6,     -- color for 0.2 skillups (cyan, noticeable)
+    chat_color_high = 76,    -- color for 0.3+ skillups (bright red, loud)
     -- Per-skill visibility, keyed by SID (string keys for stable serialization).
     -- nil/missing => visible by default.
     skills_hidden = T{},
@@ -113,22 +113,24 @@ local MAGIC_SKILL_IDS = { 33, 34, 35, 32, 36, 37, 38, 39 }
 -- FFXI chat color palette for the skillup-color picker. Each entry is a
 -- single-byte color code that AshitaCore can render in chat (\30<code>), paired
 -- with an approximate sRGB triple so we can draw clickable swatches in the
--- settings panel. The palette is curated -- FFXI exposes 256 codes but most are
--- duplicates or near-invisible; these 12 cover the practical range from subtle
--- to attention-grabbing.
+-- settings panel. The palette is calibrated against actual in-game rendering
+-- (via /prism colortest) and cross-referenced with Ashita's chat.lua canonical
+-- codes (chat.success=2, chat.warning=104, chat.error=68, chat.critical=76,
+-- chat.message=106, chat.header bracket=81 / interior=6). Codes that render
+-- as plain white (200, 121, 39, 65) are omitted -- they aren't distinct enough
+-- to be useful as a color choice.
 local CHAT_PALETTE = {
-    { code = 1,   name = 'white',     rgb = { 1.00, 1.00, 1.00 } },
-    { code = 8,   name = 'gray',      rgb = { 0.55, 0.55, 0.55 } },
-    { code = 2,   name = 'green',     rgb = { 0.30, 0.95, 0.30 } },
-    { code = 200, name = 'lime',      rgb = { 0.70, 1.00, 0.40 } },
-    { code = 6,   name = 'cyan',      rgb = { 0.40, 0.90, 1.00 } },
-    { code = 102, name = 'lightblue', rgb = { 0.55, 0.80, 1.00 } },
-    { code = 121, name = 'blue',      rgb = { 0.45, 0.55, 1.00 } },
-    { code = 5,   name = 'magenta',   rgb = { 1.00, 0.50, 1.00 } },
-    { code = 65,  name = 'pink',      rgb = { 1.00, 0.55, 0.75 } },
-    { code = 39,  name = 'orange',    rgb = { 1.00, 0.55, 0.20 } },
-    { code = 68,  name = 'red',       rgb = { 1.00, 0.30, 0.30 } },
-    { code = 106, name = 'cream',     rgb = { 1.00, 0.92, 0.65 } },
+    { code = 1,   name = 'white',   rgb = { 1.00, 1.00, 1.00 } },
+    { code = 106, name = 'cream',   rgb = { 1.00, 0.92, 0.65 } },
+    { code = 81,  name = 'yellow',  rgb = { 1.00, 0.88, 0.30 } },
+    { code = 104, name = 'gold',    rgb = { 1.00, 0.75, 0.20 } },
+    { code = 8,   name = 'orange',  rgb = { 1.00, 0.60, 0.25 } },
+    { code = 76,  name = 'redhot',  rgb = { 1.00, 0.30, 0.20 } },
+    { code = 68,  name = 'red',     rgb = { 1.00, 0.40, 0.55 } },
+    { code = 5,   name = 'magenta', rgb = { 1.00, 0.45, 1.00 } },
+    { code = 102, name = 'pink',    rgb = { 0.95, 0.55, 0.90 } },
+    { code = 6,   name = 'cyan',    rgb = { 0.40, 0.95, 1.00 } },
+    { code = 2,   name = 'green',   rgb = { 0.35, 1.00, 0.35 } },
 }
 
 -- Cast-gated magic skills only get skillups from casting (self/party
