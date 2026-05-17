@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.7.0'
+addon.version = '0.7.1'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat, defense, magic & craft skill progress per main job.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -25,6 +25,7 @@ local default_config = T{
     -- Category visibility — Prism shows ALL skills your main job has access to,
     -- grouped by category. Toggle a category off to hide its whole group.
     show_combat  = true,     -- weapons + ranged
+    combat_only_equipped = false, -- when true, Combat shows only currently-equipped weapons
     show_defense = true,     -- Guard / Evasion / Shield / Parry
     show_magic   = true,     -- main-job casting schools only (not sub-job spillover)
     show_craft   = true,     -- crafting + fishing (only the ones you've trained)
@@ -69,6 +70,7 @@ local function normalize_config()
     if type(config.skill_frac) ~= 'table' then config.skill_frac = T{} end
     if type(config.chat_skillups) ~= 'boolean' then config.chat_skillups = false end
     if type(config.show_combat)  ~= 'boolean' then config.show_combat  = true end
+    if type(config.combat_only_equipped) ~= 'boolean' then config.combat_only_equipped = false end
     if type(config.show_defense) ~= 'boolean' then config.show_defense = true end
     if type(config.show_magic)   ~= 'boolean' then config.show_magic   = true end
     if type(config.show_craft)   ~= 'boolean' then config.show_craft   = true end
@@ -1047,13 +1049,16 @@ local function draw_frame()
     for _, wsid in ipairs(get_equipped_weapon_skill_ids()) do equipped[wsid] = true end
 
     local function add_category(cat, sids)
+        local equipped_only = (cat == 'combat') and config.combat_only_equipped
         for _, sid in ipairs(sids) do
             if not seen[sid] and not is_skill_hidden(sid) then
-                seen[sid] = true
-                local it = prepare(sid, cat, job_id, mjl)
-                if it then
-                    it.equipped = equipped[sid] == true
-                    items:append(it)
+                if not equipped_only or equipped[sid] then
+                    seen[sid] = true
+                    local it = prepare(sid, cat, job_id, mjl)
+                    if it then
+                        it.equipped = equipped[sid] == true
+                        items:append(it)
+                    end
                 end
             end
         end
@@ -1273,6 +1278,14 @@ local function draw_settings()
         cat_check('Defense', 'show_defense'); imgui.SameLine()
         cat_check('Magic',   'show_magic');   imgui.SameLine()
         cat_check('Craft',   'show_craft')
+        if config.show_combat then
+            imgui.Indent(16)
+            local eq_ref = { config.combat_only_equipped }
+            if imgui.Checkbox('Only show currently-equipped weapons##sp_cat_eq', eq_ref) then
+                config.combat_only_equipped = eq_ref[1]; save()
+            end
+            imgui.Unindent(16)
+        end
         imgui.TextDisabled('Magic and combat are filtered by your main job.')
         imgui.TextDisabled('Defense shows only blocks your job has access to. Craft shows only skills you have trained.')
 
@@ -1645,6 +1658,13 @@ ashita.events.register('command', 'sp_command', function(e)
                 ))
             end
         end
+    elseif sub == 'equippedonly' or sub == 'equipped' then
+        local v = (args[3] or 'toggle'):lower()
+        if v == 'on' then config.combat_only_equipped = true
+        elseif v == 'off' then config.combat_only_equipped = false
+        else config.combat_only_equipped = not config.combat_only_equipped end
+        save()
+        say('combat_only_equipped ' .. (config.combat_only_equipped and 'ON' or 'OFF'))
     elseif sub == 'category' or sub == 'cat' then
         -- /prism category combat|defense|magic|craft [on|off|toggle]
         local which = (args[3] or ''):lower()
@@ -1703,6 +1723,7 @@ ashita.events.register('command', 'sp_command', function(e)
         say('  /prism colortest                  -- preview every palette swatch (calibration)')
         say('  /prism diag                       -- dump engine vs. table caps per skill')
         say('  /prism category <name> [on|off]   -- toggle combat|defense|magic|craft category')
+        say('  /prism equippedonly [on|off]      -- Combat: only show currently-equipped weapons')
         say('  /prism show <name>                -- show a specific skill (e.g. Elemental)')
         say('  /prism hide <name>                -- hide a specific skill')
         say('  /prism reset                      -- reset window position')
