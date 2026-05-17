@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.7.1'
+addon.version = '0.7.2'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat, defense, magic & craft skill progress per main job.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -38,8 +38,14 @@ local default_config = T{
     chat_color_mid  = 6,     -- color for 0.2 skillups (cyan, noticeable)
     chat_color_high = 76,    -- color for 0.3+ skillups (bright red, loud)
     -- Per-skill visibility, keyed by SID (string keys for stable serialization).
-    -- nil/missing => visible by default.
+    -- nil/missing => visible by default. Legacy global table (pre-0.7.2);
+    -- kept for back-compat as a fallback when no per-job entry exists.
     skills_hidden = T{},
+    -- Per-job per-skill visibility map: { [job_id_str] = { [sid_str] = true } }.
+    -- Lets you hide Throwing on DRK but keep it visible on RNG, etc. Writes
+    -- here on toggle from the settings UI or /prism hide; reads fall back to
+    -- the legacy global skills_hidden table when a per-job entry is missing.
+    skills_hidden_by_job = T{},
     -- Persisted fractional skill progress (sid -> 0.0..0.9). Filled by packet
     -- 0x29 / chat capture, reset on integer tick. Persisted so a /logout in
     -- the middle of grinding doesn't throw away the 0.1-0.9 you already earned.
@@ -66,6 +72,7 @@ local function normalize_config()
     if type(config.x) ~= 'number' then config.x = 20 end
     if type(config.y) ~= 'number' then config.y = 320 end
     if type(config.skills_hidden) ~= 'table' then config.skills_hidden = T{} end
+    if type(config.skills_hidden_by_job) ~= 'table' then config.skills_hidden_by_job = T{} end
     if type(config.persist_frac) ~= 'boolean' then config.persist_frac = true end
     if type(config.skill_frac) ~= 'table' then config.skill_frac = T{} end
     if type(config.chat_skillups) ~= 'boolean' then config.chat_skillups = false end
@@ -87,16 +94,31 @@ normalize_config()
 
 local function save() settings.save() end
 
-local function is_skill_hidden(sid)
-    return config.skills_hidden[tostring(sid)] == true
-end
-local function set_skill_hidden(sid, hidden)
+-- Per-job hide is the source of truth as of v0.7.2. Reads look up the
+-- per-job map first; if no entry exists for this job+sid, fall back to the
+-- legacy global table so existing /prism hide users don't lose state on
+-- upgrade. Writes go to the per-job map only (legacy table is read-only).
+local function is_skill_hidden(sid, job_id)
     local k = tostring(sid)
-    if hidden then
-        config.skills_hidden[k] = true
-    else
-        config.skills_hidden[k] = nil
+    if job_id ~= nil then
+        local row = config.skills_hidden_by_job[tostring(job_id)]
+        if row and row[k] ~= nil then return row[k] == true end
     end
+    return config.skills_hidden[k] == true
+end
+local function set_skill_hidden(sid, hidden, job_id)
+    local k = tostring(sid)
+    if job_id == nil then
+        -- callsite didn't know the job — fall back to legacy global so we
+        -- don't silently no-op. (Settings UI and /prism hide both pass job_id.)
+        if hidden then config.skills_hidden[k] = true
+        else config.skills_hidden[k] = nil end
+        return
+    end
+    local jk = tostring(job_id)
+    local row = config.skills_hidden_by_job[jk]
+    if not row then row = T{}; config.skills_hidden_by_job[jk] = row end
+    if hidden then row[k] = true else row[k] = nil end
 end
 
 settings.register('settings', 'settings_update', function(s)
@@ -144,6 +166,13 @@ local SKILL_CATEGORY = {}
 for cat, sids in pairs(SKILL_CATEGORIES) do
     for _, sid in ipairs(sids) do SKILL_CATEGORY[sid] = cat end
 end
+
+-- Job-id -> 3-letter abbreviation, for settings-panel labels.
+local JOB_ABBR = {
+    [1]='WAR', [2]='MNK', [3]='WHM', [4]='BLM', [5]='RDM', [6]='THF',
+    [7]='PLD', [8]='DRK', [9]='BST', [10]='BRD', [11]='RNG', [12]='SAM',
+    [13]='NIN', [14]='DRG', [15]='SMN',
+}
 
 -- FFXI chat color palette for the skillup-color picker. Each entry is a
 -- single-byte color code that AshitaCore can render in chat (\30<code>), paired
@@ -1051,7 +1080,7 @@ local function draw_frame()
     local function add_category(cat, sids)
         local equipped_only = (cat == 'combat') and config.combat_only_equipped
         for _, sid in ipairs(sids) do
-            if not seen[sid] and not is_skill_hidden(sid) then
+            if not seen[sid] and not is_skill_hidden(sid, job_id) then
                 if not equipped_only or equipped[sid] then
                     seen[sid] = true
                     local it = prepare(sid, cat, job_id, mjl)
@@ -1338,30 +1367,77 @@ local function draw_settings()
         end
 
         imgui.Separator()
+        -- Per-job, per-skill visibility. Sections populated dynamically from
+        -- the current job's rank tables so RDM sees a different list than
+        -- DRK. Selections are persisted per-job (see skills_hidden_by_job).
+        local sp_pl
+        pcall(function() sp_pl = AshitaCore:GetMemoryManager():GetPlayer() end)
+        local sp_job = sp_pl and sp_pl:GetMainJob() or nil
+        local sp_job_name = (sp_job and JOB_ABBR and JOB_ABBR[sp_job]) or ('Job#' .. tostring(sp_job or '?'))
         imgui.Text('Skills to show')
-        -- Build a stable list: main weapon slot first (label "Weapon"), then
-        -- the 8 magic skills in MAGIC_SKILL_IDS order. Each gets a checkbox.
-        -- Per-skill state is stored in config.skills_hidden keyed by sid.
+        imgui.SameLine()
+        imgui.TextDisabled('(' .. sp_job_name .. ' — saved per job)')
+
         local function skill_check(sid, label)
-            local hidden = is_skill_hidden(sid)
+            local hidden = is_skill_hidden(sid, sp_job)
             local r = { not hidden }
             if imgui.Checkbox(label .. '##sp_sk_' .. tostring(sid), r) then
-                set_skill_hidden(sid, not r[1])
+                set_skill_hidden(sid, not r[1], sp_job)
                 save()
             end
         end
-        -- Weapon row uses the equipped weapon's skill id (if any) so the
-        -- checkbox label matches what you actually see.
-        local mw_sid = get_main_weapon_skill_id()
-        if mw_sid then
-            skill_check(mw_sid, SKILL_NAMES[mw_sid] or ('Weapon#' .. mw_sid))
+        -- Render a category section: header line + up-to-3-columns of checkboxes
+        -- for the sids the current job actually has access to.
+        local function category_section(label, sids)
+            if #sids == 0 then return end
+            imgui.TextDisabled(label)
+            local col = 1
+            for _, sid in ipairs(sids) do
+                if col > 1 then imgui.SameLine() end
+                skill_check(sid, SKILL_NAMES[sid] or ('Skill#' .. sid))
+                col = col + 1
+                if col > 3 then col = 1 end
+            end
         end
-        local col = 1
-        for _, mid in ipairs(MAGIC_SKILL_IDS) do
-            if mw_sid and col == 1 then imgui.SameLine() end
-            skill_check(mid, SKILL_NAMES[mid] or ('Skill#' .. mid))
-            col = col + 1
-            if col >= 3 then col = 1 else imgui.SameLine() end
+
+        if sp_job then
+            -- Combat: only weapons/ranged this job has a rank for.
+            if config.show_combat then
+                local combat_sids = {}
+                for _, sid in ipairs(SKILL_CATEGORIES.combat) do
+                    if rank_for_job_skill(sp_job, sid) then combat_sids[#combat_sids+1] = sid end
+                end
+                category_section('Combat', combat_sids)
+            end
+            -- Defense: only the blocks this job has a rank for.
+            if config.show_defense then
+                local def_sids = {}
+                for _, sid in ipairs(SKILL_CATEGORIES.defense) do
+                    if rank_for_job_skill(sp_job, sid) then def_sids[#def_sids+1] = sid end
+                end
+                category_section('Defense', def_sids)
+            end
+            -- Magic: only the schools this job casts as main (cast allowlist).
+            if config.show_magic then
+                local mag_sids = {}
+                for _, sid in ipairs(SKILL_CATEGORIES.magic) do
+                    if rank_for_job_magic_skill(sp_job, sid) then mag_sids[#mag_sids+1] = sid end
+                end
+                category_section('Magic', mag_sids)
+            end
+            -- Craft: only ones you've trained (cur > 0 or stored frac > 0).
+            if config.show_craft then
+                local craft_sids = {}
+                for _, sid in ipairs(SKILL_CATEGORIES.craft) do
+                    local cur = get_combat_skill(sid)
+                    if (cur and cur > 0) or frac_get(sid) > 0 then
+                        craft_sids[#craft_sids+1] = sid
+                    end
+                end
+                category_section('Craft', craft_sids)
+            end
+        else
+            imgui.TextDisabled('Log in to see per-job skill list.')
         end
     end
     imgui.End()
@@ -1703,9 +1779,11 @@ ashita.events.register('command', 'sp_command', function(e)
                 end
             end
             if hit then
-                set_skill_hidden(hit, sub == 'hide')
+                local cur_job
+                pcall(function() cur_job = AshitaCore:GetMemoryManager():GetPlayer():GetMainJob() end)
+                set_skill_hidden(hit, sub == 'hide', cur_job)
                 save()
-                say(SKILL_NAMES[hit] .. ' ' .. (sub == 'hide' and 'HIDDEN' or 'SHOWN'))
+                say(SKILL_NAMES[hit] .. ' ' .. (sub == 'hide' and 'HIDDEN' or 'SHOWN') .. ' on this job')
             else
                 say('no skill matched "' .. target .. '"')
             end
