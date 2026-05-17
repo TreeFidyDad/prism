@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.5.0'
+addon.version = '0.5.1'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat & magic skill progress with effective level and min mob hints.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -109,6 +109,27 @@ local SKILL_NAMES = {
 }
 
 local MAGIC_SKILL_IDS = { 33, 34, 35, 32, 36, 37, 38, 39 }
+
+-- FFXI chat color palette for the skillup-color picker. Each entry is a
+-- single-byte color code that AshitaCore can render in chat (\30<code>), paired
+-- with an approximate sRGB triple so we can draw clickable swatches in the
+-- settings panel. The palette is curated -- FFXI exposes 256 codes but most are
+-- duplicates or near-invisible; these 12 cover the practical range from subtle
+-- to attention-grabbing.
+local CHAT_PALETTE = {
+    { code = 1,   name = 'white',     rgb = { 1.00, 1.00, 1.00 } },
+    { code = 8,   name = 'gray',      rgb = { 0.55, 0.55, 0.55 } },
+    { code = 2,   name = 'green',     rgb = { 0.30, 0.95, 0.30 } },
+    { code = 200, name = 'lime',      rgb = { 0.70, 1.00, 0.40 } },
+    { code = 6,   name = 'cyan',      rgb = { 0.40, 0.90, 1.00 } },
+    { code = 102, name = 'lightblue', rgb = { 0.55, 0.80, 1.00 } },
+    { code = 121, name = 'blue',      rgb = { 0.45, 0.55, 1.00 } },
+    { code = 5,   name = 'magenta',   rgb = { 1.00, 0.50, 1.00 } },
+    { code = 65,  name = 'pink',      rgb = { 1.00, 0.55, 0.75 } },
+    { code = 39,  name = 'orange',    rgb = { 1.00, 0.55, 0.20 } },
+    { code = 68,  name = 'red',       rgb = { 1.00, 0.30, 0.30 } },
+    { code = 106, name = 'cream',     rgb = { 1.00, 0.92, 0.65 } },
+}
 
 -- Cast-gated magic skills only get skillups from casting (self/party
 -- targets). All offensive magic is mob-level-gated like weapons, so we
@@ -1135,21 +1156,30 @@ local function draw_settings()
         end
         if config.chat_skillups then
             imgui.Indent(16)
-            imgui.TextDisabled('FFXI color codes (0-255). /prism chattest to preview.')
-            imgui.PushItemWidth(60)
-            local cl = { config.chat_color_low }
-            if imgui.InputInt('0.1 color##sp_cl', cl, 0) then
-                config.chat_color_low = math.max(0, math.min(255, cl[1])); save()
+            imgui.TextDisabled('Pick a color for each skillup magnitude. /prism chattest to preview.')
+            local function color_row(label, cfg_key)
+                imgui.Text(label)
+                imgui.SameLine(60)
+                local current = config[cfg_key]
+                local selected_name = '?'
+                for i, sw in ipairs(CHAT_PALETTE) do
+                    local rgba = { sw.rgb[1], sw.rgb[2], sw.rgb[3], 1.0 }
+                    -- ImGuiColorEditFlags_NoTooltip = 1<<8 (256)
+                    if imgui.ColorButton('##sp_' .. cfg_key .. '_' .. i, rgba, 256, { 18, 18 }) then
+                        config[cfg_key] = sw.code; save()
+                    end
+                    if imgui.IsItemHovered() then
+                        imgui.SetTooltip(('%s (code %d)'):format(sw.name, sw.code))
+                    end
+                    if sw.code == current then selected_name = sw.name end
+                    if i < #CHAT_PALETTE then imgui.SameLine() end
+                end
+                imgui.SameLine()
+                imgui.TextDisabled(('  %s (%d)'):format(selected_name, current))
             end
-            local cm = { config.chat_color_mid }
-            if imgui.InputInt('0.2 color##sp_cm', cm, 0) then
-                config.chat_color_mid = math.max(0, math.min(255, cm[1])); save()
-            end
-            local ch = { config.chat_color_high }
-            if imgui.InputInt('0.3+ color##sp_ch', ch, 0) then
-                config.chat_color_high = math.max(0, math.min(255, ch[1])); save()
-            end
-            imgui.PopItemWidth()
+            color_row('0.1',  'chat_color_low')
+            color_row('0.2',  'chat_color_mid')
+            color_row('0.3+', 'chat_color_high')
             imgui.Unindent(16)
         end
 
