@@ -2027,16 +2027,17 @@ ashita.events.register('command', 'sp_command', function(e)
         save()
         say('chat_skillups ' .. (config.chat_skillups and 'ON' or 'OFF'))
     elseif sub == 'chattest' then
-        -- Diagnostic: emit one of each magnitude (0.1, 0.2, 0.3) plus a tick,
-        -- so the user can see all three color buckets at once for tuning.
+        -- Diagnostic: emit one of each magnitude (0.1, 0.2, 0.3, 0.4) plus a tick,
+        -- so the user can see all four color buckets at once for tuning.
         local was = config.chat_skillups
         config.chat_skillups = true
         emit_skillup_chat(3, 'frac', 1)
         emit_skillup_chat(3, 'frac', 2)
         emit_skillup_chat(3, 'frac', 3)
+        emit_skillup_chat(3, 'frac', 4)
         emit_skillup_chat(3, 'tick', 96)
         config.chat_skillups = was
-        say('chattest: emitted 0.1/0.2/0.3 + tick samples (state preserved)')
+        say('chattest: emitted 0.1/0.2/0.3/0.4 + tick samples (state preserved)')
     elseif sub == 'colortest' then
         -- Dump every palette swatch as a labeled sample line so you can see
         -- exactly how each FFXI chat color code actually renders, and compare
