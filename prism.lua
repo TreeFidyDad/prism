@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.5.1'
+addon.version = '0.5.2'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat & magic skill progress with effective level and min mob hints.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -1445,6 +1445,20 @@ ashita.events.register('command', 'sp_command', function(e)
         emit_skillup_chat(3, 'tick', 96)
         config.chat_skillups = was
         say('chattest: emitted 0.1/0.2/0.3 + tick samples (state preserved)')
+    elseif sub == 'colortest' then
+        -- Dump every palette swatch as a labeled sample line so you can see
+        -- exactly how each FFXI chat color code actually renders, and compare
+        -- against the swatches in /prism settings to calibrate.
+        local cm = AshitaCore and AshitaCore:GetChatManager()
+        if not cm then return end
+        local CC = function(color, text) return string.char(0x1E, color) .. text .. string.char(0x1E, 0x01) end
+        local header = CC(102, '[' .. addon.name .. ']') .. ' '
+        for _, sw in ipairs(CHAT_PALETTE) do
+            local body = ('code %3d  %s   '):format(sw.code, sw.name)
+                .. CC(sw.code, ('Your Sword skill rises 0.3 points (this is %s)'):format(sw.name))
+            cm:AddChatMessage(1, false, header .. body)
+        end
+        say('colortest: dumped ' .. tostring(#CHAT_PALETTE) .. ' palette codes')
     elseif sub == 'show' or sub == 'hide' then
         -- /prism show <name>  /prism hide <name>  -- toggle per-skill visibility by name match
         local target = (args[3] or ''):lower()
@@ -1478,6 +1492,7 @@ ashita.events.register('command', 'sp_command', function(e)
         say('  /prism persistfrac on|off|toggle  -- persist fractional skill progress')
         say('  /prism chat on|off|toggle         -- enhanced chat skillup messages')
         say('  /prism chattest                   -- emit 2 sample chat lines (diagnostic)')
+        say('  /prism colortest                  -- preview every palette swatch (calibration)')
         say('  /prism show <name>                -- show a specific skill (e.g. Elemental)')
         say('  /prism hide <name>                -- hide a specific skill')
         say('  /prism reset                      -- reset window position')
