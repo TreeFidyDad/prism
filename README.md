@@ -55,6 +55,11 @@ Open with `/prism` or `/pr`. All options persist to Ashita's per-character confi
 - **Fractional skill (e.g. 9.1) only flows via chat/packet** — the game's memory only exposes integers. If you log in mid-skillup, you'll see the integer until the next tick rolls in.
 - Skill caps use rank slopes calibrated against low-level (`L≤9`) reference points; some piecewise interpolation remains.
 
+## Acknowledgments
+
+- **Nerf (nerfonline)** from the Ashita Discord shared the [FFXI Skill Calculator spreadsheet](https://docs.google.com/spreadsheets/d/1VE4as2FWwrD4e_lJ4h1wG6Ga50PAJGzGaWkOGOx0mvE/edit) covering canonical L1–75 skill caps and per-job rank assignments for both Horizon and Retail. Full integration of that data into Prism's cap and rank tables is planned for an upcoming release. Thanks, Nerf.
+- Skillup capture pattern (packet `0x29` MessageNum 38/53) adapted from [Jull256/skilluptracker](https://github.com/Jull256/skilluptracker) (Mujihina).
+
 ## License
 
 GPL-3.0 — see [LICENSE](LICENSE).
