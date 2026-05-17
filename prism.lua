@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.7.7'
+addon.version = '0.7.8'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat, defense, magic & craft skill progress per main job.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -32,11 +32,13 @@ local default_config = T{
     persist_frac = true,     -- save fractional skill progress to disk; survives /logout
     chat_skillups = false,   -- enhanced chat line on skillup
     -- FFXI chat color codes (0..255) for fractional skillup magnitude. Defaults
-    -- form a subtle->loud ramp (cream->cyan->bright red) so 0.3s grab your eye
-    -- and 0.1s fade. Override via the swatch picker in /prism settings.
+    -- form a subtle->loud ramp (cream->cyan->salmon->magenta) so big skillups
+    -- grab your eye and tiny ones fade. Override via the swatch picker in
+    -- /prism settings.
     chat_color_low  = 106,   -- color for 0.1 skillups (cream, subtle)
     chat_color_mid  = 6,     -- color for 0.2 skillups (cyan, noticeable)
-    chat_color_high = 76,    -- color for 0.3+ skillups (bright red, loud)
+    chat_color_high = 76,    -- color for 0.3 skillups (salmon, loud)
+    chat_color_max  = 5,     -- color for 0.4+ skillups (magenta, jackpot)
     -- Per-skill visibility, keyed by SID (string keys for stable serialization).
     -- nil/missing => visible by default. Legacy global table (pre-0.7.2);
     -- kept for back-compat as a fallback when no per-job entry exists.
@@ -1703,7 +1705,8 @@ local function draw_settings()
             end
             color_row('0.1',  'chat_color_low')
             color_row('0.2',  'chat_color_mid')
-            color_row('0.3+', 'chat_color_high')
+            color_row('0.3',  'chat_color_high')
+            color_row('0.4+', 'chat_color_max')
             imgui.Unindent(16)
         end
 
@@ -1842,12 +1845,14 @@ local function emit_skillup_chat(sid, kind, value)
     if kind == 'frac' then
         local cur_eff = _cur_int_for_sid(sid) + math.min(0.9, frac_get(sid))
         local capped  = cap and cur_eff >= cap
-        -- Bucket color by magnitude: 0.1 = low, 0.2 = mid, 0.3+ = high.
+        -- Bucket color by magnitude: 0.1 = low, 0.2 = mid, 0.3 = high, 0.4+ = max.
         local frac_color = config.chat_color_mid
         if value <= 1 then
             frac_color = config.chat_color_low
-        elseif value >= 3 then
+        elseif value == 3 then
             frac_color = config.chat_color_high
+        elseif value >= 4 then
+            frac_color = config.chat_color_max
         end
         local msg = header
             .. CC(106, name)
