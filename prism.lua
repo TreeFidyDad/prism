@@ -482,22 +482,28 @@ local function eased_pct(sid, pct)
 end
 
 ----------------------------------------------------------------
--- draw_arc: polyline-segment arc for the donut ring. AshitaImGui
--- doesn't expose PathArcTo, so we sample N points and emit AddLine
--- segments. N=48 gives smooth 360° rings at the radii we care about.
+-- draw_arc: filled-quad arc for the donut ring. Each quad extends
+-- slightly past its angular bounds so adjacent quads overlap and
+-- anti-aliasing seams between them are invisible.
 ----------------------------------------------------------------
 local function draw_arc(dl, cx, cy, r, a0, a1, color, thickness, segs)
-    segs = segs or 48
+    segs = segs or 64
     local span = a1 - a0
     local step = span / segs
-    local prev_x = cx + r * math.cos(a0)
-    local prev_y = cy + r * math.sin(a0)
-    for i = 1, segs do
-        local a = a0 + step * i
-        local nx = cx + r * math.cos(a)
-        local ny = cy + r * math.sin(a)
-        dl:AddLine({ prev_x, prev_y }, { nx, ny }, color, thickness)
-        prev_x, prev_y = nx, ny
+    local r_in  = r - thickness * 0.5
+    local r_out = r + thickness * 0.5
+    local bleed = step * 0.2
+    for i = 0, segs - 1 do
+        local qa = a0 + step * i - bleed
+        local qb = a0 + step * (i + 1) + bleed
+        local cos_a, sin_a = math.cos(qa), math.sin(qa)
+        local cos_b, sin_b = math.cos(qb), math.sin(qb)
+        local p1 = { cx + r_in  * cos_a, cy + r_in  * sin_a }
+        local p2 = { cx + r_out * cos_a, cy + r_out * sin_a }
+        local p3 = { cx + r_out * cos_b, cy + r_out * sin_b }
+        local p4 = { cx + r_in  * cos_b, cy + r_in  * sin_b }
+        dl:AddTriangleFilled(p1, p2, p3, color)
+        dl:AddTriangleFilled(p1, p3, p4, color)
     end
 end
 
@@ -549,88 +555,99 @@ end
 -- and a tick burst. Label is the whole "Name  cur/cap (rank) Lv N+"
 -- string -- centered inside the pill.
 ----------------------------------------------------------------
-local function skill_pill(sid, pct, color, label)
+local function skill_pill(sid, pct, color, label, forced_width, letter, pill_badge_w)
     local draw_pct, now = eased_pct(sid, pct)
-    -- Scale only the width — pill height is fixed by font row.
     local sc = config.scale or 1.0
-    local width, height = math.floor(SKILL_PILL_WIDTH * sc), SKILL_PILL_HEIGHT
-    -- Never shrink narrower than the label needs — text stays readable at any scale.
-    if label and label ~= '' then
-        local tw0 = imgui.CalcTextSize(label) or 0
-        local min_w = math.floor(tw0 + height + 8)
-        if width < min_w then width = min_w end
+    local height = math.floor(14 * sc)
+    if height < 12 then height = 12 end
+    local width
+    if forced_width then
+        width = forced_width
+    else
+        width = math.floor(SKILL_PILL_WIDTH * sc)
+        if label and label ~= '' then
+            local tw0 = imgui.CalcTextSize(label) or 0
+            local min_w = math.floor(tw0 + 16)
+            if width < min_w then width = min_w end
+        end
     end
 
-    local x0, y0 = imgui.GetCursorScreenPos()
-    local p1 = { x0,         y0 }
-    local p2 = { x0 + width, y0 + height }
-    local dl = imgui.GetWindowDrawList()
-    local rounding = height * 0.5
+    local pbw = pill_badge_w or 0
 
-    -- Tick burst: expanding capsule outline that fades over 500ms.
+    local x0, y0 = imgui.GetCursorScreenPos()
+    local bar_x = x0 + pbw
+    local bar_w = width - pbw
+    local dl = imgui.GetWindowDrawList()
+    local rounding = math.floor(height * 0.5)
+
+    -- Tick burst.
     local burst_t = skill_tick_burst[sid]
     if burst_t then
         local bdt = now - burst_t
         if bdt < 0.5 then
             local bt = bdt / 0.5
             local bc = imgui.GetColorU32({ color[1], color[2], color[3], (1 - bt) * 0.7 })
-            local pad = bt * 6
-            dl:AddRect({ p1[1] - pad, p1[2] - pad },
-                       { p2[1] + pad, p2[2] + pad }, bc, rounding + pad, 15, 2)
+            dl:AddRect({ bar_x - 2, y0 - 2 },
+                       { bar_x + bar_w + 2, y0 + height + 2 }, bc, rounding + 2, 15, 1.5)
         else
             skill_tick_burst[sid] = nil
         end
     end
 
     -- Trough.
-    local bg_col = imgui.GetColorU32({ 0.05, 0.05, 0.08, 0.86 })
-    dl:AddRectFilled(p1, p2, bg_col, rounding, 15)
+    local bg_col = imgui.GetColorU32({ 0.05, 0.05, 0.08, 0.88 })
+    dl:AddRectFilled({ bar_x, y0 }, { bar_x + bar_w, y0 + height }, bg_col, rounding, 15)
 
-    -- Near-cap outer glow ramps in over the last 10% of fill.
-    if draw_pct > 0.9 then
-        local t = (draw_pct - 0.9) * 10
-        local glow = imgui.GetColorU32({ color[1], color[2], color[3], t * 0.55 })
-        dl:AddRect({ p1[1] - 2, p1[2] - 2 }, { p2[1] + 2, p2[2] + 2 },
-                   glow, rounding + 2, 15, 2)
-    end
-
-    -- Colored fill body + top-half lighter overlay for glass feel.
+    -- Colored fill.
     if draw_pct > 0.0 then
-        local r, g, b = color[1], color[2], color[3]
-        local a = color[4] or 1.0
-        local fx2 = x0 + width * draw_pct
-        dl:AddRectFilled(p1, { fx2, y0 + height },
-                         imgui.GetColorU32({ r, g, b, a }), rounding, 15)
+        local cr, cg, cb = color[1], color[2], color[3]
+        local ca = color[4] or 1.0
+        local fx2 = bar_x + bar_w * draw_pct
+        dl:AddRectFilled({ bar_x, y0 }, { fx2, y0 + height },
+                         imgui.GetColorU32({ cr, cg, cb, ca }), rounding, 15)
         local light = imgui.GetColorU32({
-            math.min(1, r + 0.18),
-            math.min(1, g + 0.18),
-            math.min(1, b + 0.18), 0.32 })
-        dl:AddRectFilled(p1, { fx2, y0 + math.floor(height * 0.5) },
+            math.min(1, cr + 0.15),
+            math.min(1, cg + 0.15),
+            math.min(1, cb + 0.15), 0.25 })
+        dl:AddRectFilled({ bar_x, y0 }, { fx2, y0 + math.floor(height * 0.5) },
                          light, rounding, 3)
     end
 
-    -- Rim light + inner shadow.
-    local rim_inset = rounding * 0.5
-    local rim_col   = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.20 })
-    local sh_col    = imgui.GetColorU32({ 0.0, 0.0, 0.0, 0.40 })
-    dl:AddLine({ x0 + rim_inset,         y0 + 1 },
-               { x0 + width - rim_inset, y0 + 1 }, rim_col, 1)
-    dl:AddLine({ x0 + rim_inset,         y0 + height - 1 },
-               { x0 + width - rim_inset, y0 + height - 1 }, sh_col, 1)
+    -- Rank-colored outline.
+    local ol = imgui.GetColorU32({ color[1], color[2], color[3], 0.85 })
+    dl:AddRect({ bar_x, y0 }, { bar_x + bar_w, y0 + height }, ol, rounding, 15, 1.2)
 
-    -- Outer border.
-    dl:AddRect(p1, p2, imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.15 }),
-               rounding, 15, 1)
-
+    -- Text label centered in bar.
     if label and label ~= '' then
         local tw, th = imgui.CalcTextSize(label)
         tw = tw or 0; th = th or 0
-        local tx = x0 + (width - tw) * 0.5
+        local tx = bar_x + (bar_w - tw) * 0.5
         local ty = y0 + (height - th) * 0.5
         local shadow = imgui.GetColorU32({ 0.0, 0.0, 0.0, 0.85 })
         local white  = imgui.GetColorU32({ 1.0, 1.0, 1.0, 1.0 })
         dl:AddText({ tx + 1, ty + 1 }, shadow, label)
         dl:AddText({ tx,     ty     }, white,  label)
+    end
+
+    -- Rank pill badge on the left (fixed width from pill_badge_w, matches bar height).
+    if letter and letter ~= '' and pbw > 0 then
+        local lw, lh = imgui.CalcTextSize(letter)
+        lw = lw or 0; lh = lh or 10
+        local gap = math.floor(3 * sc)
+        local pw = pbw - gap
+        local ph = height
+        local px = x0
+        local py = y0
+        local pillbg = imgui.GetColorU32({ 0.07, 0.08, 0.11, 0.95 })
+        local pillb  = imgui.GetColorU32({ color[1], color[2], color[3], 0.95 })
+        dl:AddRectFilled({ px, py }, { px + pw, py + ph }, pillbg, 3, 15)
+        dl:AddRect({ px, py }, { px + pw, py + ph }, pillb, 3, 15, 1.2)
+        local pill_shadow = imgui.GetColorU32({ 0, 0, 0, 0.85 })
+        local txtcol = imgui.GetColorU32({ 0.95, 0.97, 1.0, 1.0 })
+        local ltx = px + (pw - lw) * 0.5
+        local lty = py + (ph - lh) * 0.5
+        dl:AddText({ ltx + 1, lty + 1 }, pill_shadow, letter)
+        dl:AddText({ ltx,     lty     }, txtcol, letter)
     end
 
     imgui.Dummy({ width, height })
@@ -648,12 +665,15 @@ local function skill_donut(sid, pct, color, label, cur_str, cap_str, letter, eff
     local x0, y0 = imgui.GetCursorScreenPos()
     local sc     = config.scale or 1.0
     local r      = SKILL_DONUT_RADIUS * sc
-    local cw     = math.max(SKILL_DONUT_CELL_W * sc, 2 * r + 16)
-    -- Reserve a constant text block (font doesn't scale with sc).
+    local thick  = SKILL_DONUT_THICK * sc
+    local r_out  = r + thick * 0.5
+    local r_in   = r - thick * 0.5
+    local top_pad = math.ceil(thick * 0.5) + 29
+    local cw     = math.max(SKILL_DONUT_CELL_W * sc, 2 * r_out + 16)
     local text_block_h = 52
-    local ch     = 2 * r + 8 + text_block_h
+    local ch     = top_pad + 2 * r_out + 4 + text_block_h
     local cx     = x0 + cw * 0.5
-    local cy     = y0 + r + 4
+    local cy     = y0 + r_out + top_pad
     local dl     = imgui.GetWindowDrawList()
 
     -- Tick burst behind the donut.
@@ -663,46 +683,142 @@ local function skill_donut(sid, pct, color, label, cur_str, cap_str, letter, eff
         if bdt < 0.5 then
             local s = 1 - bdt / 0.5
             local bc = imgui.GetColorU32({ color[1], color[2], color[3], 0.7 * s })
-            local pad = bdt * 14
-            dl:AddCircle({ cx, cy }, r + pad, bc, 32, 1.5)
+            local bpad = bdt * 14
+            dl:AddCircle({ cx, cy }, r_out + bpad, bc, 48, 1.5)
         else
             skill_tick_burst[sid] = nil
         end
     end
 
-    local thick  = SKILL_DONUT_THICK * sc
-    -- Trough ring.
-    local trough = imgui.GetColorU32({ 0.10, 0.11, 0.14, 0.92 })
-    draw_arc(dl, cx, cy, r, 0, math.pi * 2, trough, thick, 48)
+    -- Donut ring: scanline strips for both trough and fill (guaranteed
+    -- gap-free, same technique as the crystal renderer). AA circles on
+    -- outer/inner edges smooth the curve stairstepping.
+    local TWO_PI    = math.pi * 2
+    local a0        = -math.pi * 0.5
+    local fill_span = TWO_PI * draw_pct
+    local has_fill  = draw_pct > 0.005
+    local a1        = a0 + fill_span
 
-    -- Near-cap soft outer halo.
-    if draw_pct > 0.9 then
-        local s = (draw_pct - 0.9) * 10
-        local halo = imgui.GetColorU32({ color[1], color[2], color[3], s * 0.45 })
-        draw_arc(dl, cx, cy, r + 3 * sc, 0, math.pi * 2, halo, 2 * sc, 48)
+    local trough_col = imgui.GetColorU32({ 0.08, 0.08, 0.10, 0.95 })
+    local fc         = imgui.GetColorU32({ color[1], color[2], color[3], 0.98 })
+
+    local function is_filled(theta)
+        local diff = (theta - a0) % TWO_PI
+        return diff <= fill_span
+    end
+    local function boundary_x(a, dy)
+        local sa = math.sin(a)
+        if math.abs(sa) < 0.001 then return nil end
+        local t = dy / sa
+        if t < 0 then return nil end
+        return cx + t * math.cos(a)
     end
 
-    -- Filled arc clockwise from 12 o'clock (-pi/2).
-    if draw_pct > 0.01 then
-        local a0 = -math.pi * 0.5
-        local a1 = a0 + math.pi * 2 * draw_pct
-        local fc = imgui.GetColorU32({ color[1], color[2], color[3], 0.98 })
-        draw_arc(dl, cx, cy, r, a0, a1, fc, thick, 48)
+    local y_top = math.floor(cy - r_out)
+    local y_bot = math.ceil(cy + r_out)
+
+    for y = y_top, y_bot do
+        local dy = y + 0.5 - cy
+        local dy2 = dy * dy
+        -- Trough uses slightly smaller radii so outline fully covers it.
+        -- Fill uses slightly larger radii so outline sits on top cleanly.
+        local r_out_t = r_out - 0.5
+        local r_in_t  = r_in + 0.5
+        local r_out_f = r_out + 1
+        local r_in_f  = math.max(0, r_in - 1)
+
+        if dy2 < r_out_f * r_out_f then
+            if not has_fill then
+                if dy2 < r_out_t * r_out_t then
+                    local xo = math.sqrt(r_out_t * r_out_t - dy2)
+                    local xi = (dy2 < r_in_t * r_in_t) and math.sqrt(r_in_t * r_in_t - dy2) or 0
+                    if xi > 0.5 then
+                        dl:AddRectFilled({ cx - xo, y }, { cx - xi, y + 1 }, trough_col)
+                        dl:AddRectFilled({ cx + xi, y }, { cx + xo, y + 1 }, trough_col)
+                    else
+                        dl:AddRectFilled({ cx - xo, y }, { cx + xo, y + 1 }, trough_col)
+                    end
+                end
+            else
+                local xo = math.sqrt(r_out_f * r_out_f - dy2)
+                local xi = (dy2 < r_in_f * r_in_f) and math.sqrt(r_in_f * r_in_f - dy2) or 0
+                local xo_t = (dy2 < r_out_t * r_out_t) and math.sqrt(r_out_t * r_out_t - dy2) or 0
+                local xi_t = (dy2 < r_in_t * r_in_t) and math.sqrt(r_in_t * r_in_t - dy2) or 0
+
+                local strips
+                if xi > 0.5 then
+                    strips = { { cx - xo, cx - xi }, { cx + xi, cx + xo } }
+                else
+                    strips = { { cx - xo, cx + xo } }
+                end
+
+                local bx0 = boundary_x(a0, dy)
+                local bx1 = boundary_x(a1, dy)
+
+                for _, s in ipairs(strips) do
+                    local sl, sr = s[1], s[2]
+                    local cuts = { sl }
+                    if bx0 and bx0 > sl + 0.5 and bx0 < sr - 0.5 then cuts[#cuts + 1] = bx0 end
+                    if bx1 and bx1 ~= bx0 and bx1 > sl + 0.5 and bx1 < sr - 0.5 then cuts[#cuts + 1] = bx1 end
+                    cuts[#cuts + 1] = sr
+                    table.sort(cuts)
+
+                    for ci = 1, #cuts - 1 do
+                        local cl, cr = cuts[ci], cuts[ci + 1]
+                        if cr - cl > 0.1 then
+                            local mx = (cl + cr) * 0.5
+                            local theta = math.atan2(dy, mx - cx)
+                            if is_filled(theta) then
+                                dl:AddRectFilled({ cl, y }, { cr, y + 1 }, fc)
+                            else
+                                local tl = math.max(cl, cx - xo_t)
+                                local tr = math.min(cr, cx + xo_t)
+                                if xi_t > 0.5 then
+                                    if tl < cx - xi_t then
+                                        dl:AddRectFilled({ tl, y }, { math.min(tr, cx - xi_t), y + 1 }, trough_col)
+                                    end
+                                    if tr > cx + xi_t then
+                                        dl:AddRectFilled({ math.max(tl, cx + xi_t), y }, { tr, y + 1 }, trough_col)
+                                    end
+                                elseif tr > tl then
+                                    dl:AddRectFilled({ tl, y }, { tr, y + 1 }, trough_col)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
     end
+
+    -- Tier-colored outlines on outer/inner edges. These AA circles cover
+    -- the scanline stairstepping on both the trough and fill, giving the
+    -- donut clean smooth edges.
+    local outline_col = imgui.GetColorU32({ color[1], color[2], color[3], 0.90 })
+    dl:AddCircle({ cx, cy }, r_out, outline_col, 64, 1.5)
+    dl:AddCircle({ cx, cy }, r_in,  outline_col, 64, 1.5)
+
 
     local shadow = imgui.GetColorU32({ 0, 0, 0, 0.85 })
     local white  = imgui.GetColorU32({ 1, 1, 1, 1.0 })
     local dim    = imgui.GetColorU32({ 0.65, 0.68, 0.74, 1.0 })
 
-    -- Rank letter near the top, dim accent.
+    -- Rank pill badge at the top of the donut (same style as crystals).
     if letter and letter ~= '' then
         local lw, lh = imgui.CalcTextSize(letter)
         lw = lw or 0; lh = lh or 10
-        local lx = cx - lw * 0.5
-        local ly = cy - r * 0.45 - lh * 0.5
-        local accent = imgui.GetColorU32({ 0.82, 0.85, 0.92, 0.85 })
-        dl:AddText({ lx + 1, ly + 1 }, shadow, letter)
-        dl:AddText({ lx,     ly     }, accent, letter)
+        local pw, ph = math.floor((lw + 12) * sc), math.floor((lh + 4) * sc)
+        local px = cx - pw * 0.5
+        local py = (cy - r_out) - ph * 0.5 - 15
+        local pillbg = imgui.GetColorU32({ 0.07, 0.08, 0.11, 0.95 })
+        local pillb  = imgui.GetColorU32({ color[1], color[2], color[3], 0.95 })
+        dl:AddRectFilled({ px, py }, { px + pw, py + ph }, pillbg, math.floor(3 * sc), 15)
+        dl:AddRect({ px, py }, { px + pw, py + ph }, pillb, math.floor(3 * sc), 15, 1.6)
+        local txtcol = imgui.GetColorU32({ 0.95, 0.97, 1.0, 1.0 })
+        local tx = px + (pw - lw) * 0.5
+        local ty = py + (ph - lh) * 0.5
+        dl:AddText({ tx + 1, ty + 1 }, shadow, letter)
+        dl:AddText({ tx,     ty     }, txtcol, letter)
     end
 
     -- Big effective level number centered.
@@ -717,7 +833,7 @@ local function skill_donut(sid, pct, color, label, cur_str, cap_str, letter, eff
     end
 
     -- Caption: name, cur/cap, hint.
-    local cap_y = cy + r + 4
+    local cap_y = cy + r + 14
     if label then
         local maxw = cw - 4
         local lstr = label
@@ -767,56 +883,64 @@ local function skill_donut(sid, pct, color, label, cur_str, cap_str, letter, eff
 end
 
 ----------------------------------------------------------------
--- skill_crystal: FF-style tall hexagonal crystal (FFXI elemental-crystal vibe).
---   - 6-point vertical hex: pointed top + bottom, two side vertices each
---   - Soft circular glow disk + chromatic hex halo in tier color
---   - Dark trough, fill rises from the bottom (polygon-clipped)
---   - Facet diagonals + bright highlight stripe + sparkles
---   - Rank-letter pill above; eff_lvl centered inside; caption below
+-- skill_crystal: FF-style tall hexagonal crystal. Scanline-rendered
+-- interior (no triangle fans, no ghost lines, no clipping artifacts).
+--   - Colored glow halo + soft backlight in tier color
+--   - Dark crystal body filled by scanline strips
+--   - Gradient fill rises from bottom (bright/white base → tier color)
+--   - Facet lines, highlight stripe, sparkles (all AddLine-safe)
+--   - Colored outline, rank pill on top, caption below
 ----------------------------------------------------------------
 local function skill_crystal(sid, pct, color, label, cur_str, cap_str, letter, eff_lvl, min_mob_lvl, is_cast_gated)
     local draw_pct, now = eased_pct(sid, pct)
 
     local x0, y0 = imgui.GetCursorScreenPos()
     local sc     = config.scale or 1.0
-    -- FF-XI elemental-crystal proportions: narrow body, long hexagonal middle,
-    -- short pointed caps. Width 18*sc so the silhouette reads "tall crystal"
-    -- not "fat diamond". Shoulders push out to 0.62*r so the body dominates.
     local r      = SKILL_CRYSTAL_R * sc
     local hw     = 18 * sc
     local cw     = math.max(SKILL_CRYSTAL_CELL_W * sc, hw * 2 + 16)
     local text_block_h = 52
-    local ch     = 16 + 2 * r + 6 + text_block_h
+    local top_pad = 34
+    local ch     = top_pad + 2 * r + 6 + text_block_h
     local cx     = x0 + cw * 0.5
-    local cy     = y0 + r + 16
+    local cy     = y0 + r + top_pad
     local dl     = imgui.GetWindowDrawList()
 
-    -- 6 vertices, clockwise from top:
-    --   1 top  2 ur  3 lr  4 bot  5 ll  6 ul
     local shoulder = r * 0.62
     local v = {
-        { cx,      cy - r        },
-        { cx + hw, cy - shoulder },
-        { cx + hw, cy + shoulder },
-        { cx,      cy + r        },
-        { cx - hw, cy + shoulder },
-        { cx - hw, cy - shoulder },
+        { cx,      cy - r        },   -- 1: top
+        { cx + hw, cy - shoulder },    -- 2: upper-right
+        { cx + hw, cy + shoulder },    -- 3: lower-right
+        { cx,      cy + r        },   -- 4: bottom
+        { cx - hw, cy + shoulder },    -- 5: lower-left
+        { cx - hw, cy - shoulder },    -- 6: upper-left
     }
 
-    -- Rank pill straddling the top vertex.
-    if letter and letter ~= '' then
-        local lw, lh = imgui.CalcTextSize(letter)
-        lw = lw or 0; lh = lh or 10
-        local pw, ph = lw + 12, lh + 4
-        local px, py = cx - pw * 0.5, (cy - r) - ph + 2
-        local pillbg = imgui.GetColorU32({ 0.07, 0.08, 0.11, 0.95 })
-        local pillb  = imgui.GetColorU32({ color[1], color[2], color[3], 0.95 })
-        dl:AddRectFilled({ px, py }, { px + pw, py + ph }, pillbg, 3, 15)
-        dl:AddRect({ px, py }, { px + pw, py + ph }, pillb, 3, 15, 1.6)
-        local shadow = imgui.GetColorU32({ 0, 0, 0, 0.85 })
-        local txtcol = imgui.GetColorU32({ 0.95, 0.97, 1.0, 1.0 })
-        dl:AddText({ px + 6 + 1, py + 2 + 1 }, shadow, letter)
-        dl:AddText({ px + 6,     py + 2     }, txtcol, letter)
+    -- Scanline helper: left and right x of a 6-vertex hex at a given y.
+    local function edge_x(a, b, yy)
+        local dy = b[2] - a[2]
+        if math.abs(dy) < 0.01 then return nil end
+        local t = (yy - a[2]) / dy
+        if t < -0.01 or t > 1.01 then return nil end
+        return a[1] + math.max(0, math.min(1, t)) * (b[1] - a[1])
+    end
+    local function hex_lr(verts, yy)
+        local lx = edge_x(verts[1], verts[6], yy) or edge_x(verts[6], verts[5], yy) or edge_x(verts[5], verts[4], yy)
+        local rx = edge_x(verts[1], verts[2], yy) or edge_x(verts[2], verts[3], yy) or edge_x(verts[3], verts[4], yy)
+        return lx, rx
+    end
+    local function crystal_lr(yy) return hex_lr(v, yy) end
+
+    -- Build an inflated copy of the hex vertices (push each vertex outward).
+    local function inflate_hex(pad)
+        local iv = {}
+        for i = 1, 6 do
+            local dx, dy = v[i][1] - cx, v[i][2] - cy
+            local d = math.sqrt(dx * dx + dy * dy)
+            if d < 0.01 then d = 0.01 end
+            iv[i] = { v[i][1] + dx * pad / d, v[i][2] + dy * pad / d }
+        end
+        return iv
     end
 
     -- Tick burst: expanding hex outline fading over 500ms.
@@ -841,93 +965,142 @@ local function skill_crystal(sid, pct, color, label, cur_str, cap_str, letter, e
         end
     end
 
-    -- Soft glow disk behind everything (lit-from-within feel).
-    local glow = imgui.GetColorU32({ color[1], color[2], color[3], 0.14 })
-    dl:AddCircleFilled({ cx, cy }, r * 0.95, glow, 24)
-
-    -- Glow halo: hex inflated ~9px in the tier color at higher alpha.
-    local halo = imgui.GetColorU32({ color[1], color[2], color[3], 0.32 })
-    local halo_pad = 9
-    for i = 1, 6 do
-        local a, b = v[i], v[(i % 6) + 1]
-        local ax = a[1] + (a[1] - cx) * (halo_pad / r)
-        local ay = a[2] + (a[2] - cy) * (halo_pad / r)
-        local bx = b[1] + (b[1] - cx) * (halo_pad / r)
-        local by = b[2] + (b[2] - cy) * (halo_pad / r)
-        dl:AddTriangleFilled({ cx, cy }, { ax, ay }, { bx, by }, halo)
+    -- Hex-shaped gradient glow: many concentric inflated hex shells drawn
+    -- outer-to-inner with smoothly increasing alpha, creating a seamless
+    -- gradient that follows the crystal shape.
+    local GLOW_PAD   = 12 * sc
+    local GLOW_STEPS = 10
+    local glow_colors = {}
+    for step = 0, GLOW_STEPS do
+        local t = step / GLOW_STEPS
+        local alpha = 0.03 + t * 0.15
+        glow_colors[step] = imgui.GetColorU32({ color[1], color[2], color[3], alpha })
+    end
+    for step = 0, GLOW_STEPS do
+        local t = step / GLOW_STEPS
+        local pad = GLOW_PAD * (1 - t)
+        local gv = inflate_hex(pad)
+        local gc = glow_colors[step]
+        local gy_top = math.floor(gv[1][2])
+        local gy_bot = math.ceil(gv[4][2])
+        for y = gy_top, gy_bot, 2 do
+            local lx, rx = hex_lr(gv, y + 1)
+            if lx and rx then
+                dl:AddRectFilled({ lx, y }, { rx, y + 2 }, gc)
+            end
+        end
     end
 
-    -- Trough: dark hex, fan from center.
-    local trough = imgui.GetColorU32({ 0.06, 0.07, 0.10, 0.98 })
-    for i = 1, 6 do
-        dl:AddTriangleFilled({ cx, cy }, v[i], v[(i % 6) + 1], trough)
+    -- Crystal body: trough + fill rendered as horizontal scanline strips.
+    -- Each strip is a single AddRectFilled — zero triangle fans, zero
+    -- ghost lines, zero clipping math.
+    local y_top = math.floor(cy - r)
+    local y_bot = math.ceil(cy + r)
+    local trough_col = imgui.GetColorU32({ 0.06, 0.07, 0.10, 1.0 })
+
+    -- Precompute fill gradient bands (bright/white at bottom → tier color
+    -- at top of fill, like light gathering inside the crystal).
+    local fill_y = (draw_pct > 0.005) and (cy + r - (2 * r) * draw_pct) or (y_bot + 1)
+    local fill_top_y = math.max(y_top, math.floor(fill_y))
+    local fill_range = math.max(1, y_bot - fill_top_y)
+    local NUM_BANDS = 12
+    local bands = {}
+    if draw_pct > 0.005 then
+        for b = 0, NUM_BANDS do
+            local t = b / NUM_BANDS
+            local wb = (1 - t) * 0.45
+            bands[b] = imgui.GetColorU32({
+                math.min(1, color[1] + (1 - color[1]) * wb),
+                math.min(1, color[2] + (1 - color[2]) * wb),
+                math.min(1, color[3] + (1 - color[3]) * wb), 1.0 })
+        end
     end
 
-    -- Fill rising from the bottom: clip hex against horizontal line y=cap_y.
-    if draw_pct > 0.01 then
-        local cap_y = cy + r - (2 * r) * draw_pct
-        local poly = {}
+    for y = y_top, y_bot do
+        local lx, rx = crystal_lr(y + 0.5)
+        if lx and rx then
+            if y >= fill_top_y and draw_pct > 0.005 then
+                local progress = math.max(0, math.min(1, (y_bot - y) / fill_range))
+                local bi = math.min(NUM_BANDS, math.floor(progress * NUM_BANDS + 0.5))
+                dl:AddRectFilled({ lx, y }, { rx, y + 1 }, bands[bi])
+            else
+                dl:AddRectFilled({ lx, y }, { rx, y + 1 }, trough_col)
+            end
+        end
+    end
+
+    -- Near-cap outer glow (last 10% of fill).
+    if draw_pct > 0.9 then
+        local t = (draw_pct - 0.9) * 10
+        local nc = imgui.GetColorU32({ color[1], color[2], color[3], t * 0.45 })
         for i = 1, 6 do
-            local a = v[i]
-            local b = v[(i % 6) + 1]
-            local a_in = a[2] >= cap_y
-            local b_in = b[2] >= cap_y
-            if a_in then poly[#poly + 1] = a end
-            if a_in ~= b_in then
-                local dy = b[2] - a[2]
-                if dy ~= 0 then
-                    local t = (cap_y - a[2]) / dy
-                    poly[#poly + 1] = { a[1] + t * (b[1] - a[1]), cap_y }
-                end
-            end
-        end
-        if #poly >= 3 then
-            local fc = imgui.GetColorU32({ color[1], color[2], color[3], 1.0 })
-            for i = 2, #poly - 1 do
-                dl:AddTriangleFilled(poly[1], poly[i], poly[i + 1], fc)
-            end
+            local a, b = v[i], v[(i % 6) + 1]
+            local ax = a[1] + (a[1] - cx) * (3 / r)
+            local ay = a[2] + (a[2] - cy) * (3 / r)
+            local bx = b[1] + (b[1] - cx) * (3 / r)
+            local by = b[2] + (b[2] - cy) * (3 / r)
+            dl:AddLine({ ax, ay }, { bx, by }, nc, 2 * sc)
         end
     end
 
-    -- Outline.
+    -- Facet lines (AddLine only — always artifact-free). Dual pass:
+    -- light for dark areas, dark for bright areas.
+    local facet_light = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.14 })
+    local facet_dark  = imgui.GetColorU32({ 0.0, 0.0, 0.0, 0.18 })
+    local facets = { { v[1], v[3] }, { v[1], v[5] }, { v[4], v[2] }, { v[4], v[6] },
+                     { { cx, cy - r }, { cx, cy + r } } }
+    for _, f in ipairs(facets) do
+        dl:AddLine(f[1], f[2], facet_light, 1.0)
+        dl:AddLine(f[1], f[2], facet_dark, 1.0)
+    end
+
+    -- Colored outline.
     local outline = imgui.GetColorU32({ color[1], color[2], color[3], 0.95 })
     for i = 1, 6 do
         dl:AddLine(v[i], v[(i % 6) + 1], outline, 2.0)
     end
 
-    -- Facet lines: full diagonals from top vertex to both lower-side
-    -- shoulders, from bottom vertex to both upper-side shoulders, plus a
-    -- thin vertical seam down the center. Six visible facets, FF style.
-    local facet_dim = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.22 })
-    dl:AddLine(v[1], v[3], facet_dim, 1.0)
-    dl:AddLine(v[1], v[5], facet_dim, 1.0)
-    dl:AddLine(v[4], v[2], facet_dim, 1.0)
-    dl:AddLine(v[4], v[6], facet_dim, 1.0)
-    dl:AddLine({ cx, cy - r }, { cx, cy + r }, facet_dim, 1.0)
-
-    -- Bright highlight stripe along the upper-left face plus a soft echo on
-    -- the upper-right for symmetry.
-    local hi_strong = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.55 })
-    local hi_soft   = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.25 })
+    -- Highlight stripe on upper-left face + softer echo on upper-right.
+    local hi_strong = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.30 })
+    local hi_soft   = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.12 })
     dl:AddLine(
         { v[1][1] + (v[6][1] - v[1][1]) * 0.18, v[1][2] + (v[6][2] - v[1][2]) * 0.18 },
         { v[1][1] + (v[6][1] - v[1][1]) * 0.85, v[1][2] + (v[6][2] - v[1][2]) * 0.85 },
-        hi_strong, 1.8)
+        hi_strong, 1.5)
     dl:AddLine(
         { v[1][1] + (v[2][1] - v[1][1]) * 0.25, v[1][2] + (v[2][2] - v[1][2]) * 0.25 },
         { v[1][1] + (v[2][1] - v[1][1]) * 0.75, v[1][2] + (v[2][2] - v[1][2]) * 0.75 },
-        hi_soft, 1.2)
+        hi_soft, 1.0)
 
-    -- Two sparkles for the "lit gem" feel.
-    local spark = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.75 })
-    dl:AddCircleFilled({ cx - hw * 0.30, cy - r * 0.55 }, 1.4, spark)
-    dl:AddCircleFilled({ cx + hw * 0.40, cy - r * 0.20 }, 1.0, spark)
+    -- Sparkle accents.
+    local spark = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.60 })
+    dl:AddCircleFilled({ cx - hw * 0.30, cy - r * 0.55 }, 1.4 * sc, spark)
+    dl:AddCircleFilled({ cx + hw * 0.40, cy - r * 0.20 }, 1.0 * sc, spark)
+
+    -- Rank pill drawn last (on top of everything).
+    if letter and letter ~= '' then
+        local lw, lh = imgui.CalcTextSize(letter)
+        lw = lw or 0; lh = lh or 10
+        local pw, ph = math.floor((lw + 12) * sc), math.floor((lh + 4) * sc)
+        local px = cx - pw * 0.5
+        local py = (cy - r) - ph * 0.5 - 10
+        local pillbg = imgui.GetColorU32({ 0.07, 0.08, 0.11, 0.95 })
+        local pillb  = imgui.GetColorU32({ color[1], color[2], color[3], 0.95 })
+        dl:AddRectFilled({ px, py }, { px + pw, py + ph }, pillbg, math.floor(3 * sc), 15)
+        dl:AddRect({ px, py }, { px + pw, py + ph }, pillb, math.floor(3 * sc), 15, 1.6)
+        local pill_shadow = imgui.GetColorU32({ 0, 0, 0, 0.85 })
+        local txtcol = imgui.GetColorU32({ 0.95, 0.97, 1.0, 1.0 })
+        local tx = px + (pw - lw) * 0.5
+        local ty = py + (ph - lh) * 0.5
+        dl:AddText({ tx + 1, ty + 1 }, pill_shadow, letter)
+        dl:AddText({ tx,     ty     }, txtcol, letter)
+    end
 
     local shadow = imgui.GetColorU32({ 0, 0, 0, 0.85 })
     local white  = imgui.GetColorU32({ 1, 1, 1, 1.0 })
     local dim    = imgui.GetColorU32({ 0.70, 0.74, 0.80, 1.0 })
 
-    -- Big effective level centered inside the diamond.
+    -- Effective level centered inside the crystal.
     if eff_lvl then
         local s = tostring(eff_lvl)
         local nw, nh = imgui.CalcTextSize(s)
@@ -938,8 +1111,8 @@ local function skill_crystal(sid, pct, color, label, cur_str, cap_str, letter, e
         dl:AddText({ nx,     ny     }, white,  s)
     end
 
-    -- Caption: name / cur/cap / hint, below the diamond.
-    local cap_yt = cy + r + 4
+    -- Caption: name / cur/cap / hint, below the crystal.
+    local cap_yt = cy + r + 9
     if label then
         local maxw = cw - 4
         local lstr = label
@@ -1084,7 +1257,7 @@ end
 -- frame: build items list, then render per current display_mode
 -- and per_row layout.
 ----------------------------------------------------------------
-local function render_pill_line(item)
+local function build_pill_label(item)
     local hint = ''
     if item.cap then
         if item.is_cast_gated then
@@ -1093,17 +1266,17 @@ local function render_pill_line(item)
             hint = ('  Lv %d+'):format(item.min_mob_lvl)
         end
     end
-    local line
-    if item.cap and item.letter then
-        line = ('%s  %s/%d (%s)%s%s'):format(
-            item.label, item.cur_str, item.cap, item.letter, item.eff_str, hint)
-    elseif item.cap then
-        line = ('%s  %s/%d%s%s'):format(
+    if item.cap then
+        return ('%s  %s/%d%s%s'):format(
             item.label, item.cur_str, item.cap, item.eff_str, hint)
     else
-        line = ('%s  %s'):format(item.label, item.cur_str)
+        return ('%s  %s'):format(item.label, item.cur_str)
     end
-    skill_pill(item.sid, item.pct, item.color, line)
+end
+
+local function render_pill_line(item, forced_width, pill_badge_w)
+    local line = build_pill_label(item)
+    skill_pill(item.sid, item.pct, item.color, line, forced_width, item.letter, pill_badge_w)
 end
 
 local last_item_count = 6
@@ -1199,9 +1372,30 @@ local function draw_frame()
             end
         end
     else
-        imgui.PushStyleVar(ImGuiStyleVar_ItemSpacing, { 4, 1 })
-        for _, item in ipairs(items) do render_pill_line(item) end
+        local sc = config.scale or 1.0
+        local pad = math.ceil(4 * sc)
+        local max_tw = 0
+        local max_badge_w = 0
+        for _, item in ipairs(items) do
+            local lbl = build_pill_label(item)
+            local tw = imgui.CalcTextSize(lbl) or 0
+            if tw > max_tw then max_tw = tw end
+            if item.letter and item.letter ~= '' then
+                local lw = imgui.CalcTextSize(item.letter) or 0
+                local bw = lw + 10 + 3
+                if bw > max_badge_w then max_badge_w = bw end
+            end
+        end
+        local uniform_w = math.floor((max_tw + 36 + max_badge_w) * sc)
+        local spacing = math.max(1, math.floor(2 * sc))
+        imgui.Dummy({ 0, pad })
+        imgui.PushStyleVar(ImGuiStyleVar_ItemSpacing, { 4, spacing })
+        for _, item in ipairs(items) do
+            imgui.SetCursorPosX(imgui.GetCursorPosX() + pad)
+            render_pill_line(item, uniform_w, math.floor(max_badge_w * sc))
+        end
         imgui.PopStyleVar()
+        imgui.Dummy({ uniform_w + pad * 2, pad })
     end
     last_item_count = math.max(1, #items)
 end
