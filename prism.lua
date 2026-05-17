@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.4.1'
+addon.version = '0.4.2'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat & magic skill progress with effective level and min mob hints.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -1280,8 +1280,11 @@ ashita.events.register('text_in', 'sp_text_in', function(e)
     end
     -- When chat_skillups is on, suppress the game's default "skill rises / reaches"
     -- chat line so users see only the enhanced version. Same blocking pattern as
-    -- skilluptracker uses to avoid double-printing.
-    if config.chat_skillups and (s:match('skill rises') or s:match('skill reaches')) then
+    -- skilluptracker uses to avoid double-printing. CRITICAL: do not block our
+    -- own emitted lines (they carry the [prism] header), or the addon eats itself.
+    if config.chat_skillups
+        and (s:match('skill rises') or s:match('skill reaches'))
+        and not s:find('[' .. addon.name .. ']', 1, true) then
         e.blocked = true
     end
 end)
