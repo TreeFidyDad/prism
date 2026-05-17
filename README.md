@@ -64,7 +64,8 @@ Skill capture adapted from [Jull256/skilluptracker](https://github.com/Jull256/s
 /prism diag                         -- dump engine cap vs. table cap per skill (calibration)
 /prism colortest                    -- preview every chat-skillup palette swatch
 /prism show <name>                  -- show a specific skill (e.g. Elemental)
-/prism hide <name>                  -- hide a specific skill
+/prism hide <name>                  -- hide a specific skill on the current job (per-job)
+/prism show <name>                  -- un-hide a specific skill on the current job
 /prism reset                        -- reset window position
 ```
 
@@ -81,6 +82,7 @@ Open with `/prism` or `/pr`. All options persist to Ashita's per-character confi
 - **Everything is gated by main job**. Combat, defense, and magic categories filter to skills your main job actually has access to — flip jobs and the overlay reshapes automatically. No more Healing/Enhancing/Divine clutter on DRK.
 - **Crafting only appears once trained.** Crafts have no rank table, so Prism only shows a craft skill if you've earned at least 0.1 in it.
 - **"Only show equipped weapons"** (Combat category): if you main RDM but never swing a Sword, flip this on and Combat collapses to just your main-hand + ranged. Swap weapons and the overlay updates next frame. Toggle in settings or `/prism equippedonly on`.
+- **Per-job skill checkboxes.** The settings panel's "Skills to show" section lists exactly the skills your current main job has access to, grouped by category. Untick what you don't want to see. Selections are **saved per job**, so hiding Throwing on DRK won't hide it when you switch to RNG. Same behavior from chat with `/prism hide Throwing` / `/prism show Throwing`.
 - **Engine cap > static table.** When the game exposes a cap via `GetCap()`, Prism uses it directly. The static `CAP_REF`/`JOB_SKILL_RANK` tables are HorizonXI-calibrated fallbacks for cases where the engine returns 0 or nil. Run `/prism diag` to see both side by side for every skill.
 - **Fractional skill (e.g. 9.1) only flows via chat/packet** — the game's memory only exposes integers. Prism saves your fractional progress to Ashita's per-character config (toggle in settings or `/prism persistfrac off`), so a `/logout` doesn't throw away the 0.1–0.9 you already earned.
 - **Enhanced chat skillup messages** are *off by default* (toggle in settings or `/prism chat on`). When enabled, Prism replaces the game's default `Your X skill rises 1 point` line with a colored version showing the fractional total and cap, e.g. `Your sword skill rises 0.3 points (95.4 / 100)`. Defense and craft skillups also get the enhanced treatment. If you also run [skilluptracker](https://github.com/Jull256/skilluptracker), keep one or the other enabled — not both — to avoid double-printed lines.
