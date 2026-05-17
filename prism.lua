@@ -210,10 +210,12 @@ local CHAT_PALETTE = {
     { code = 104, name = 'yellow',  rgb = { 1.00, 0.95, 0.35 } },
     { code = 8,   name = 'orange',  rgb = { 1.00, 0.60, 0.25 } },
     { code = 93,  name = 'red',     rgb = { 1.00, 0.20, 0.20 } },
+    { code = 99,  name = 'blood',   rgb = { 0.60, 0.10, 0.10 } },
     { code = 76,  name = 'salmon',  rgb = { 1.00, 0.55, 0.55 } },
     { code = 68,  name = 'pink',    rgb = { 1.00, 0.55, 0.75 } },
     { code = 5,   name = 'magenta', rgb = { 1.00, 0.45, 1.00 } },
     { code = 81,  name = 'violet',  rgb = { 0.70, 0.50, 1.00 } },
+    { code = 71,  name = 'blue',    rgb = { 0.40, 0.55, 1.00 } },
     { code = 6,   name = 'cyan',    rgb = { 0.40, 0.95, 1.00 } },
     { code = 2,   name = 'green',   rgb = { 0.35, 1.00, 0.35 } },
     { code = 91,  name = 'black',   rgb = { 0.10, 0.10, 0.10 } },
@@ -1701,10 +1703,22 @@ local function draw_settings()
                         imgui.SetTooltip(('%s (code %d)'):format(sw.name, sw.code))
                     end
                     if sw.code == current then selected_name = sw.name end
-                    if i < #CHAT_PALETTE then imgui.SameLine() end
+                    imgui.SameLine()
+                end
+                -- Numeric escape hatch: type any 0..255 chat code directly.
+                -- Use this with /prism colorsweep when no swatch matches.
+                local code_ref = { current }
+                imgui.PushItemWidth(50)
+                if imgui.InputInt('##sp_' .. cfg_key .. '_code', code_ref, 0, 0) then
+                    local v = math.max(0, math.min(255, math.floor(code_ref[1] or 0)))
+                    config[cfg_key] = v; save()
+                end
+                imgui.PopItemWidth()
+                if imgui.IsItemHovered() then
+                    imgui.SetTooltip('Type any 0..255 chat code. Use /prism colorsweep to find one.')
                 end
                 imgui.SameLine()
-                imgui.TextDisabled(('  %s (%d)'):format(selected_name, current))
+                imgui.TextDisabled(('  %s'):format(selected_name))
             end
             color_row('0.1',  'chat_color_low')
             color_row('0.2',  'chat_color_mid')
