@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.5.4'
+addon.version = '0.6.0'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat & magic skill progress with effective level and min mob hints.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -187,8 +187,19 @@ local JOB_SKILL_RANK = {
 }
 
 local JOB_MAGIC_SKILL_RANK = {
-    [3]  = { [33]=0, [34]=3, [35]=5, [32]=3 }, -- WHM
-    [5]  = { [35]=0, [34]=3, [36]=6, [33]=8, [32]=10, [37]=10 }, -- RDM
+    -- Allowlist of main-job magic skills + fallback rank if the engine
+    -- doesn't report one. The engine's reported rank (from packet/memory)
+    -- always takes precedence when present, so these fallback values just
+    -- need to be in the right ballpark for the cap math to make sense.
+    -- Pre-ToAU jobs only (HorizonXI is 75-cap era).
+    [3]  = { [32]=3,  [33]=0,  [34]=3,  [35]=5 },                            -- WHM: Div B+, Hea A+, Enh B+, Enf B-
+    [4]  = { [32]=10, [33]=7,  [34]=9,  [35]=5,  [36]=0,  [37]=3 },          -- BLM: Div E, Hea C, Enh D, Enf B-, Ele A+, Dark B+
+    [5]  = { [35]=0,  [34]=3,  [36]=6,  [33]=8,  [32]=10, [37]=10 },         -- RDM: Enf A+, Enh B+, Ele C+, Hea C-, Div E, Dark E
+    [7]  = { [32]=1,  [33]=4,  [34]=4,  [35]=9 },                            -- PLD: Div A, Hea B, Enh B, Enf D
+    [8]  = { [32]=10, [33]=9,  [34]=9,  [35]=6,  [36]=7,  [37]=4 },          -- DRK: Div E, Hea D, Enh D, Enf C+, Ele C, Dark B
+    [13] = { [33]=10, [34]=7,  [35]=7,  [36]=9,  [37]=9,  [39]=0 },          -- NIN: Hea E, Enh C, Enf C, Ele D, Dark D, Nin A+
+    [14] = { [33]=10 },                                                       -- DRG: Hea E
+    [15] = { [32]=7,  [33]=7,  [34]=7,  [35]=9,  [38]=0 },                   -- SMN: Div C, Hea C, Enh C, Enf D, Sum A+
 }
 
 local function rank_for_job_skill(job_id, skill_id)
@@ -245,35 +256,57 @@ end
 ----------------------------------------------------------------
 -- player + skill readers
 ----------------------------------------------------------------
-local function get_main_weapon_skill_id()
-    local ok, sid = pcall(function()
+
+-- Read the skill IDs of the player's currently equipped weapons (main hand
+-- and ranged). We show combat-skill rows for weapons that are actually
+-- equipped so the overlay stays focused on what you're swinging right now.
+-- Returns a list of skill IDs (may be empty, main always first when present).
+local function get_equipped_weapon_skill_ids()
+    local out = T{}
+    pcall(function()
         local inv = AshitaCore:GetMemoryManager():GetInventory()
-        local eq = inv:GetEquippedItem(0)
-        if not eq or eq.Index == 0 then return nil end
-        local container = math.floor(eq.Index / 0x100)
-        local slot = eq.Index % 0x100
-        local item = inv:GetContainerItem(container, slot)
-        if not item or item.Id == 0 then return nil end
-        local res = AshitaCore:GetResourceManager():GetItemById(item.Id)
-        if not res or not res.Skill then return nil end
-        return res.Skill
+        for _, slot_idx in ipairs({ 0, 2 }) do  -- 0 = main hand, 2 = ranged
+            local eq = inv:GetEquippedItem(slot_idx)
+            if eq and eq.Index ~= 0 then
+                local container = math.floor(eq.Index / 0x100)
+                local slot = eq.Index % 0x100
+                local item = inv:GetContainerItem(container, slot)
+                if item and item.Id ~= 0 then
+                    local res = AshitaCore:GetResourceManager():GetItemById(item.Id)
+                    if res and res.Skill and res.Skill ~= 0 then
+                        out:append(res.Skill)
+                    end
+                end
+            end
+        end
     end)
-    if ok then return sid end
-    return nil
+    return out
 end
 
+-- Backwards-compat shim for any callers that still want just the main hand.
+local function get_main_weapon_skill_id()
+    local sids = get_equipped_weapon_skill_ids()
+    return sids[1]
+end
+
+-- Returns current value, rank index, and engine-reported cap for a combat
+-- skill. The engine's cap is authoritative when present (it reflects the
+-- exact server-side ranking, which can differ from our static tables).
+-- Falls back to nil for fields the API doesn't expose so the caller can
+-- compute from CAP_REF.
 local function get_combat_skill(sid)
-    if not sid then return nil, nil end
-    local ok, cur, rank = pcall(function()
+    if not sid then return nil, nil, nil end
+    local ok, cur, rank, cap = pcall(function()
         local pl = AshitaCore:GetMemoryManager():GetPlayer()
         local s = pl:GetCombatSkill(sid)
-        if not s then return nil, nil end
+        if not s then return nil, nil, nil end
         local raw_cur  = (type(s.GetSkill) == 'function') and s:GetSkill() or s.Skill
         local raw_rank = (type(s.GetRank)  == 'function') and s:GetRank()  or s.Rank
-        return raw_cur, raw_rank
+        local raw_cap  = (type(s.GetCap)   == 'function') and s:GetCap()   or s.Cap
+        return raw_cur, raw_rank, raw_cap
     end)
-    if ok then return cur, rank end
-    return nil, nil
+    if ok then return cur, rank, cap end
+    return nil, nil, nil
 end
 
 -- Fractional skill accumulator: filled by packet 0x29 (authoritative,
@@ -836,7 +869,7 @@ end
 ----------------------------------------------------------------
 local function prepare(sid, magic, job_id, mjl)
     if not sid then return nil end
-    local cur, rank = get_combat_skill(sid)
+    local cur, rank, engine_cap = get_combat_skill(sid)
     if not cur then return nil end
 
     -- Detect integer-tick rises for the burst halo + reset fractional.
@@ -849,17 +882,24 @@ local function prepare(sid, magic, job_id, mjl)
 
     -- For magic skills, restrict to main-job ranks only. The engine reports
     -- ranks from sub-job too, which makes irrelevant rows (e.g. SMN/NIN on a
-    -- non-summoner/ninja main) show up. Use the main-job table as the gate.
+    -- non-summoner/ninja main) show up. The main-job table acts as an
+    -- allowlist; the engine's rank/cap (when present) are authoritative
+    -- because they reflect this server's actual ranking, which can differ
+    -- from retail canonical.
     if magic then
-        local main_rank = rank_for_job_magic_skill(job_id, sid)
-        if not main_rank then return nil end
-        rank = main_rank
+        local fallback_rank = rank_for_job_magic_skill(job_id, sid)
+        if not fallback_rank then return nil end
+        if not rank then rank = fallback_rank end
     elseif not rank then
         rank = rank_for_job_skill(job_id, sid)
     end
     if not rank then return nil end
 
-    local cap     = skill_cap_for(rank, mjl)
+    -- Prefer the engine-reported cap when it's a sane positive value -- it
+    -- matches what FFXI shows in /checkparam and avoids drift from our
+    -- static tables when a server (e.g. HorizonXI) ranks a skill differently
+    -- than retail canonical.
+    local cap = (engine_cap and engine_cap > 0) and engine_cap or skill_cap_for(rank, mjl)
     local letter  = RANK_LETTERS[rank]
     if cap and cur >= cap and not config.show_capped then return nil end
 
@@ -936,10 +976,13 @@ local function draw_frame()
     local job_id = pl:GetMainJob()
 
     local items = T{}
-    local mw_sid = get_main_weapon_skill_id()
-    if mw_sid and not is_skill_hidden(mw_sid) then
-        local mw_item = prepare(mw_sid, false, job_id, mjl)
-        if mw_item then items:append(mw_item) end
+    local seen_combat = T{}
+    for _, wsid in ipairs(get_equipped_weapon_skill_ids()) do
+        if not seen_combat[wsid] and not is_skill_hidden(wsid) then
+            seen_combat[wsid] = true
+            local w_item = prepare(wsid, false, job_id, mjl)
+            if w_item then items:append(w_item) end
+        end
     end
     for _, mid in ipairs(MAGIC_SKILL_IDS) do
         if not is_skill_hidden(mid) then
