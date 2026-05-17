@@ -1,16 +1,16 @@
 # Prism
 
-A floating skill overlay for **FFXI** (Ashita v4). Shows every skill your main job has access to — combat, defense, magic, and crafting — with tier-colored crystals, gems, donuts, or pills, plus effective level and minimum mob level hints so you know what to hunt next.
+A floating skill overlay for **FFXI** (Ashita v4). Shows every skill your main job has access to — combat, defense, magic, and crafting — with tier-colored crystals, donuts, or pills, plus effective level and minimum mob level hints so you know what to hunt next.
 
 ![Prism overlay on RDM — all four categories](assets/overlay-rdm.png)
 
 ## Display modes
 
-| Crystals (default) | Gems | Donuts | Pills |
-|---|---|---|---|
-| ![Crystals](assets/overlay-rdm.png) | ![Gems](assets/gems-rdm.png) | ![Donuts](assets/donuts-rdm.png) | ![Pills](assets/pills-rdm.png) |
+| Crystals (default) | Donuts | Pills |
+|---|---|---|
+| ![Crystals](assets/overlay-rdm.png) | ![Donuts](assets/donuts-rdm.png) | ![Pills](assets/pills-rdm.png) |
 
-Switch with the radio row in `/prism settings` or `/prism mode crystals|gems|donuts|pills`. Tier color encodes rank: **A+ gold**, **B green**, **C cyan**, **D blue**, **E/F grey**.
+Switch with the radio row in `/prism settings` or `/prism mode crystals|donuts|pills`. Tier color encodes rank: **A+ gold**, **B green**, **C cyan**, **D blue**, **E/F grey**.
 
 ## All skills, four categories
 

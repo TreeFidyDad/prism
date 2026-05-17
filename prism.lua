@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.7.3'
+addon.version = '0.7.4'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat, defense, magic & craft skill progress per main job.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -17,7 +17,7 @@ local default_config = T{
     visible      = true,
     x            = 20,
     y            = 320,
-    display_mode = 'crystals', -- 'crystals' | 'gems' | 'donuts' | 'pills'
+    display_mode = 'crystals', -- 'crystals' | 'donuts' | 'pills'
     per_row      = 3,        -- 1..N (N = number of visible skills)
     scale        = 1.0,      -- 0.6..2.0 visual scale multiplier
     sort_mode    = 'default',-- 'default' | 'grade' | 'lowest' | 'progress'
@@ -54,10 +54,14 @@ local default_config = T{
 local config = settings.load(default_config)
 -- normalize legacy/invalid values so a hand-edit can't wedge the overlay
 local function normalize_config()
+    -- v0.7.4: 'gems' was folded into 'crystals' (the FF hex shape is now the
+    -- default crystal). Migrate any saved 'gems' value silently.
+    if config.display_mode == 'gems' then
+        config.display_mode = 'crystals'
+    end
     if  config.display_mode ~= 'pills'
     and config.display_mode ~= 'donuts'
-    and config.display_mode ~= 'crystals'
-    and config.display_mode ~= 'gems' then
+    and config.display_mode ~= 'crystals' then
         config.display_mode = 'crystals'
     end
     if type(config.per_row) ~= 'number' then config.per_row = 3 end
@@ -767,204 +771,21 @@ local function skill_donut(sid, pct, color, label, cur_str, cap_str, letter, eff
 end
 
 ----------------------------------------------------------------
--- skill_crystal: FF-style 4-point diamond gem.
---   - Diamond outline (top/right/bottom/left) with X facet lines
---   - Fill rises from the bottom based on pct (clipped to diamond polygon)
---   - Small rank-letter pill above the gem
---   - Big effective level centered inside, name/cur/cap/hint below
+-- skill_crystal: FF-style tall hexagonal crystal (FFXI elemental-crystal vibe).
+--   - 6-point vertical hex: pointed top + bottom, two side vertices each
+--   - Soft circular glow disk + chromatic hex halo in tier color
+--   - Dark trough, fill rises from the bottom (polygon-clipped)
+--   - Facet diagonals + bright highlight stripe + sparkles
+--   - Rank-letter pill above; eff_lvl centered inside; caption below
 ----------------------------------------------------------------
 local function skill_crystal(sid, pct, color, label, cur_str, cap_str, letter, eff_lvl, min_mob_lvl, is_cast_gated)
     local draw_pct, now = eased_pct(sid, pct)
 
     local x0, y0 = imgui.GetCursorScreenPos()
     local sc     = config.scale or 1.0
-    local r      = SKILL_CRYSTAL_R * sc
-    local hw     = SKILL_CRYSTAL_W * sc
-    -- Width scales with the diamond, but stays wide enough for typical labels.
-    local cw     = math.max(SKILL_CRYSTAL_CELL_W * sc, hw * 2 + 16)
-    -- Height: pill band (16) + diamond (2r) + a fixed text block (font is
-    -- not scaled by config.scale, so reserve a constant ~50px for 3 caption
-    -- lines + bottom padding). This stops captions getting clipped when
-    -- sc < 1.0.
-    local text_block_h = 52
-    local ch     = 16 + 2 * r + 6 + text_block_h
-    local cx     = x0 + cw * 0.5
-    -- Top band reserves space for the rank pill that sits atop the gem.
-    local cy     = y0 + r + 16
-    local dl     = imgui.GetWindowDrawList()
-
-    -- Rank pill straddling the top vertex (so it visually integrates with
-    -- the diamond like the old crystal look Blake's anchored on).
-    if letter and letter ~= '' then
-        local lw, lh = imgui.CalcTextSize(letter)
-        lw = lw or 0; lh = lh or 10
-        local pw = lw + 12
-        local ph = lh + 4
-        local px = cx - pw * 0.5
-        -- Pill sits directly on top of the diamond's top vertex (touching).
-        local py = (cy - r) - ph + 2
-        local pillbg = imgui.GetColorU32({ 0.07, 0.08, 0.11, 0.95 })
-        local pillb  = imgui.GetColorU32({ color[1], color[2], color[3], 0.95 })
-        dl:AddRectFilled({ px, py }, { px + pw, py + ph }, pillbg, 3, 15)
-        dl:AddRect({ px, py }, { px + pw, py + ph }, pillb, 3, 15, 1.6)
-        local shadow = imgui.GetColorU32({ 0, 0, 0, 0.85 })
-        local txtcol = imgui.GetColorU32({ 0.95, 0.97, 1.0, 1.0 })
-        dl:AddText({ px + 6 + 1, py + 2 + 1 }, shadow, letter)
-        dl:AddText({ px + 6,     py + 2     }, txtcol, letter)
-    end
-
-    -- 4-point diamond: top, right, bottom, left.
-    local v = {
-        { cx,      cy - r }, -- 1 top
-        { cx + hw, cy     }, -- 2 right
-        { cx,      cy + r }, -- 3 bottom
-        { cx - hw, cy     }, -- 4 left
-    }
-
-    -- Tick burst: expanding diamond outline fading over 500ms.
-    local burst_t = skill_tick_burst[sid]
-    if burst_t then
-        local bdt = now - burst_t
-        if bdt < 0.5 then
-            local s   = 1 - bdt / 0.5
-            local bc  = imgui.GetColorU32({ color[1], color[2], color[3], 0.7 * s })
-            local pad = bdt * 12
-            for i = 1, 4 do
-                local a = v[i]
-                local b = v[(i % 4) + 1]
-                local ax = a[1] + (a[1] - cx) * (pad / r)
-                local ay = a[2] + (a[2] - cy) * (pad / r)
-                local bx = b[1] + (b[1] - cx) * (pad / r)
-                local by = b[2] + (b[2] - cy) * (pad / r)
-                dl:AddLine({ ax, ay }, { bx, by }, bc, 1.5)
-            end
-        else
-            skill_tick_burst[sid] = nil
-        end
-    end
-
-    -- Trough: dark diamond, fan from center.
-    local trough = imgui.GetColorU32({ 0.06, 0.07, 0.10, 0.98 })
-    for i = 1, 4 do
-        dl:AddTriangleFilled({ cx, cy }, v[i], v[(i % 4) + 1], trough)
-    end
-
-    -- Fill rising from the bottom: clip diamond against horizontal line y=cap_y.
-    if draw_pct > 0.01 then
-        local cap_y = cy + r - (2 * r) * draw_pct
-        local poly = {}
-        for i = 1, 4 do
-            local a = v[i]
-            local b = v[(i % 4) + 1]
-            local a_in = a[2] >= cap_y
-            local b_in = b[2] >= cap_y
-            if a_in then poly[#poly + 1] = a end
-            if a_in ~= b_in then
-                local dy = b[2] - a[2]
-                if dy ~= 0 then
-                    local t = (cap_y - a[2]) / dy
-                    poly[#poly + 1] = { a[1] + t * (b[1] - a[1]), cap_y }
-                end
-            end
-        end
-        if #poly >= 3 then
-            local fc = imgui.GetColorU32({ color[1], color[2], color[3], 1.0 })
-            for i = 2, #poly - 1 do
-                dl:AddTriangleFilled(poly[1], poly[i], poly[i + 1], fc)
-            end
-        end
-    end
-
-    -- Outline (brighter near cap).
-    local outline_alpha = 0.95
-    local outline = imgui.GetColorU32({
-        color[1], color[2], color[3], outline_alpha })
-    for i = 1, 4 do
-        dl:AddLine(v[i], v[(i % 4) + 1], outline, 2.0)
-    end
-
-    -- Two small "facet dots" on the right edge to evoke a cut-gem highlight.
-    local dotcol = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.55 })
-    dl:AddCircleFilled({ cx + hw * 0.55, cy - r * 0.18 }, 1.2, dotcol)
-    dl:AddCircleFilled({ cx + hw * 0.30, cy + r * 0.10 }, 1.0, dotcol)
-
-    local shadow = imgui.GetColorU32({ 0, 0, 0, 0.85 })
-    local white  = imgui.GetColorU32({ 1, 1, 1, 1.0 })
-    local dim    = imgui.GetColorU32({ 0.70, 0.74, 0.80, 1.0 })
-
-    -- Big effective level centered inside the diamond.
-    if eff_lvl then
-        local s = tostring(eff_lvl)
-        local nw, nh = imgui.CalcTextSize(s)
-        nw = nw or 0; nh = nh or 12
-        local nx = cx - nw * 0.5
-        local ny = cy - nh * 0.5
-        dl:AddText({ nx + 1, ny + 1 }, shadow, s)
-        dl:AddText({ nx,     ny     }, white,  s)
-    end
-
-    -- Caption: name / cur/cap / hint, below the diamond.
-    local cap_yt = cy + r + 4
-    if label then
-        local maxw = cw - 4
-        local lstr = label
-        local lw   = imgui.CalcTextSize(lstr) or 0
-        while lw > maxw and #lstr > 1 do
-            lstr = lstr:sub(1, -2)
-            lw   = imgui.CalcTextSize(lstr) or 0
-        end
-        local lh
-        lw, lh = imgui.CalcTextSize(lstr)
-        lw = lw or 0; lh = lh or 12
-        local lx = x0 + (cw - lw) * 0.5
-        dl:AddText({ lx + 1, cap_yt + 1 }, shadow, lstr)
-        dl:AddText({ lx,     cap_yt     }, white,  lstr)
-        cap_yt = cap_yt + lh + 1
-    end
-    if cur_str then
-        local sub = cap_str and (cur_str .. '/' .. cap_str) or cur_str
-        local sw, sh = imgui.CalcTextSize(sub)
-        sw = sw or 0; sh = sh or 12
-        local sx = x0 + (cw - sw) * 0.5
-        dl:AddText({ sx + 1, cap_yt + 1 }, shadow, sub)
-        dl:AddText({ sx,     cap_yt     }, dim,    sub)
-        cap_yt = cap_yt + sh + 1
-    end
-    local hint
-    if is_cast_gated then hint = 'cast'
-    elseif min_mob_lvl then hint = ('Lv %d+'):format(min_mob_lvl) end
-    if hint then
-        local hw2, hh = imgui.CalcTextSize(hint)
-        hw2 = hw2 or 0; hh = hh or 12
-        local hx = x0 + (cw - hw2) * 0.5
-        local accent = is_cast_gated
-            and imgui.GetColorU32({ 0.55, 0.70, 0.95, 0.95 })
-            or  imgui.GetColorU32({ 0.95, 0.82, 0.45, 0.95 })
-        dl:AddText({ hx + 1, cap_yt + 1 }, shadow, hint)
-        dl:AddText({ hx,     cap_yt     }, accent, hint)
-    end
-
-    imgui.Dummy({ cw, ch })
-end
-
-----------------------------------------------------------------
--- skill_gem: tall hexagonal FFXI elemental-crystal vibe.
---   - 6-point vertical hex (point top + bottom, two side vertices each)
---   - Outer glow halo in tier color
---   - Dark trough, fill rising from the bottom (polygon clipped)
---   - Bright vertical facet seam down the center
---   - Two diagonal cut lines from the top vertex (gem suggestion)
---   - Rank pill on top, eff_lvl center, caption below (same as crystal)
-----------------------------------------------------------------
-local function skill_gem(sid, pct, color, label, cur_str, cap_str, letter, eff_lvl, min_mob_lvl, is_cast_gated)
-    local draw_pct, now = eased_pct(sid, pct)
-
-    local x0, y0 = imgui.GetCursorScreenPos()
-    local sc     = config.scale or 1.0
-    -- FF-XI elemental-crystal proportions: narrow body, long hexagonal
-    -- middle, short pointed caps. Width drops to ~18*sc so the silhouette
-    -- reads "tall crystal" not "fat diamond". Shoulders push out to 0.62*r
-    -- so the body section dominates and the top/bottom caps are sharp.
+    -- FF-XI elemental-crystal proportions: narrow body, long hexagonal middle,
+    -- short pointed caps. Width 18*sc so the silhouette reads "tall crystal"
+    -- not "fat diamond". Shoulders push out to 0.62*r so the body dominates.
     local r      = SKILL_CRYSTAL_R * sc
     local hw     = 18 * sc
     local cw     = math.max(SKILL_CRYSTAL_CELL_W * sc, hw * 2 + 16)
@@ -976,7 +797,7 @@ local function skill_gem(sid, pct, color, label, cur_str, cap_str, letter, eff_l
 
     -- 6 vertices, clockwise from top:
     --   1 top  2 ur  3 lr  4 bot  5 ll  6 ul
-    local shoulder = r * 0.62  -- vertical offset of side vertices from cy
+    local shoulder = r * 0.62
     local v = {
         { cx,      cy - r        },
         { cx + hw, cy - shoulder },
@@ -986,7 +807,7 @@ local function skill_gem(sid, pct, color, label, cur_str, cap_str, letter, eff_l
         { cx - hw, cy - shoulder },
     }
 
-    -- Rank pill straddling the top vertex (matches crystal mode).
+    -- Rank pill straddling the top vertex.
     if letter and letter ~= '' then
         local lw, lh = imgui.CalcTextSize(letter)
         lw = lw or 0; lh = lh or 10
@@ -1024,15 +845,11 @@ local function skill_gem(sid, pct, color, label, cur_str, cap_str, letter, eff_l
         end
     end
 
-    -- Soft glow disk behind everything: a big low-alpha circle in the tier
-    -- color, then the hex halo, then the gem itself. Layers stack to give
-    -- the FF-crystal "lit from within" feel.
+    -- Soft glow disk behind everything (lit-from-within feel).
     local glow = imgui.GetColorU32({ color[1], color[2], color[3], 0.14 })
     dl:AddCircleFilled({ cx, cy }, r * 0.95, glow, 24)
 
-    -- Glow halo: same hex inflated ~9px in the tier color at higher alpha
-    -- so the silhouette gets a clear chromatic outline. Drawn before the
-    -- trough so the trough overwrites the inner area.
+    -- Glow halo: hex inflated ~9px in the tier color at higher alpha.
     local halo = imgui.GetColorU32({ color[1], color[2], color[3], 0.32 })
     local halo_pad = 9
     for i = 1, 6 do
@@ -1083,9 +900,8 @@ local function skill_gem(sid, pct, color, label, cur_str, cap_str, letter, eff_l
     end
 
     -- Facet lines: full diagonals from top vertex to both lower-side
-    -- shoulders, full diagonals from bottom vertex to both upper-side
-    -- shoulders, plus a thin vertical seam down the center. Gives the
-    -- crystal six visible facets in classic FF style.
+    -- shoulders, from bottom vertex to both upper-side shoulders, plus a
+    -- thin vertical seam down the center. Six visible facets, FF style.
     local facet_dim = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.22 })
     dl:AddLine(v[1], v[3], facet_dim, 1.0)
     dl:AddLine(v[1], v[5], facet_dim, 1.0)
@@ -1093,8 +909,8 @@ local function skill_gem(sid, pct, color, label, cur_str, cap_str, letter, eff_l
     dl:AddLine(v[4], v[6], facet_dim, 1.0)
     dl:AddLine({ cx, cy - r }, { cx, cy + r }, facet_dim, 1.0)
 
-    -- Bright highlight stripe along the upper-left face (catches the light)
-    -- plus a softer one on the upper-right for symmetry.
+    -- Bright highlight stripe along the upper-left face plus a soft echo on
+    -- the upper-right for symmetry.
     local hi_strong = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.55 })
     local hi_soft   = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.25 })
     dl:AddLine(
@@ -1115,7 +931,7 @@ local function skill_gem(sid, pct, color, label, cur_str, cap_str, letter, eff_l
     local white  = imgui.GetColorU32({ 1, 1, 1, 1.0 })
     local dim    = imgui.GetColorU32({ 0.70, 0.74, 0.80, 1.0 })
 
-    -- Big effective level centered inside.
+    -- Big effective level centered inside the diamond.
     if eff_lvl then
         local s = tostring(eff_lvl)
         local nw, nh = imgui.CalcTextSize(s)
@@ -1126,7 +942,7 @@ local function skill_gem(sid, pct, color, label, cur_str, cap_str, letter, eff_l
         dl:AddText({ nx,     ny     }, white,  s)
     end
 
-    -- Caption: name / cur/cap / hint, below the gem.
+    -- Caption: name / cur/cap / hint, below the diamond.
     local cap_yt = cy + r + 4
     if label then
         local maxw = cw - 4
@@ -1381,17 +1197,6 @@ local function draw_frame()
                 imgui.SameLine(0, 4)
             end
         end
-    elseif mode == 'gems' then
-        local per_row = config.per_row
-        for i, item in ipairs(items) do
-            local cap_str = item.cap and tostring(item.cap) or nil
-            skill_gem(item.sid, item.pct, item.color, item.label,
-                      item.cur_str, cap_str, item.letter, item.eff_lvl,
-                      item.min_mob_lvl, item.is_cast_gated)
-            if per_row > 1 and i % per_row ~= 0 and i < #items then
-                imgui.SameLine(0, 4)
-            end
-        end
     else
         imgui.PushStyleVar(ImGuiStyleVar_ItemSpacing, { 4, 1 })
         for _, item in ipairs(items) do render_pill_line(item) end
@@ -1467,10 +1272,6 @@ local function draw_settings()
         imgui.Text('Display Mode')
         if imgui.RadioButton('Crystals##sp_mode_c', config.display_mode == 'crystals') then
             config.display_mode = 'crystals'; save()
-        end
-        imgui.SameLine()
-        if imgui.RadioButton('Gems##sp_mode_g', config.display_mode == 'gems') then
-            config.display_mode = 'gems'; save()
         end
         imgui.SameLine()
         if imgui.RadioButton('Donuts##sp_mode_d', config.display_mode == 'donuts') then
@@ -1875,10 +1676,10 @@ ashita.events.register('command', 'sp_command', function(e)
         say('overlay ' .. (config.visible and 'ON' or 'OFF'))
     elseif sub == 'mode' then
         local m = args[3] and args[3]:lower()
-        if m == 'pills' or m == 'donuts' or m == 'crystals' or m == 'gems' then
+        if m == 'pills' or m == 'donuts' or m == 'crystals' then
             config.display_mode = m; save(); say('mode = ' .. m)
         else
-            say('usage: /prism mode crystals|gems|donuts|pills (current: ' .. config.display_mode .. ')')
+            say('usage: /prism mode crystals|donuts|pills (current: ' .. config.display_mode .. ')')
         end
     elseif sub == 'perrow' or sub == 'per_row' or sub == 'pr' then
         local n = tonumber(args[3])
@@ -2034,7 +1835,7 @@ ashita.events.register('command', 'sp_command', function(e)
         say('commands:')
         say('  /prism on|off|toggle              -- show/hide overlay')
         say('  /prism settings                   -- open settings panel')
-        say('  /prism mode crystals|gems|donuts|pills -- display style')
+        say('  /prism mode crystals|donuts|pills -- display style')
         say('  /prism perrow 1..24               -- items per row')
         say('  /prism capped                     -- toggle showing capped skills')
         say('  /prism persistfrac on|off|toggle  -- persist fractional skill progress')
