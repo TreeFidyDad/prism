@@ -58,6 +58,7 @@ Skill capture adapted from [Jull256/skilluptracker](https://github.com/Jull256/s
 /prism perrow 1..24                 -- items per row
 /prism capped                       -- toggle showing capped skills
 /prism category <name> [on|off]     -- toggle a category (combat|defense|magic|craft)
+/prism equippedonly [on|off]        -- Combat: only show currently-equipped weapons
 /prism persistfrac on|off|toggle    -- persist fractional skill progress across /logout
 /prism chat on|off|toggle           -- enhanced chat skillup messages (off by default)
 /prism diag                         -- dump engine cap vs. table cap per skill (calibration)
@@ -79,6 +80,7 @@ Open with `/prism` or `/pr`. All options persist to Ashita's per-character confi
 
 - **Everything is gated by main job**. Combat, defense, and magic categories filter to skills your main job actually has access to — flip jobs and the overlay reshapes automatically. No more Healing/Enhancing/Divine clutter on DRK.
 - **Crafting only appears once trained.** Crafts have no rank table, so Prism only shows a craft skill if you've earned at least 0.1 in it.
+- **"Only show equipped weapons"** (Combat category): if you main RDM but never swing a Sword, flip this on and Combat collapses to just your main-hand + ranged. Swap weapons and the overlay updates next frame. Toggle in settings or `/prism equippedonly on`.
 - **Engine cap > static table.** When the game exposes a cap via `GetCap()`, Prism uses it directly. The static `CAP_REF`/`JOB_SKILL_RANK` tables are HorizonXI-calibrated fallbacks for cases where the engine returns 0 or nil. Run `/prism diag` to see both side by side for every skill.
 - **Fractional skill (e.g. 9.1) only flows via chat/packet** — the game's memory only exposes integers. Prism saves your fractional progress to Ashita's per-character config (toggle in settings or `/prism persistfrac off`), so a `/logout` doesn't throw away the 0.1–0.9 you already earned.
 - **Enhanced chat skillup messages** are *off by default* (toggle in settings or `/prism chat on`). When enabled, Prism replaces the game's default `Your X skill rises 1 point` line with a colored version showing the fractional total and cap, e.g. `Your sword skill rises 0.3 points (95.4 / 100)`. Defense and craft skillups also get the enhanced treatment. If you also run [skilluptracker](https://github.com/Jull256/skilluptracker), keep one or the other enabled — not both — to avoid double-printed lines.
