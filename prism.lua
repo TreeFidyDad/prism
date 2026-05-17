@@ -961,11 +961,12 @@ local function skill_gem(sid, pct, color, label, cur_str, cap_str, letter, eff_l
 
     local x0, y0 = imgui.GetCursorScreenPos()
     local sc     = config.scale or 1.0
-    -- Hex is taller and a touch narrower than the diamond so it reads as a
-    -- "crystal" not a "gem". Reuse the crystal cell width so per-row math is
-    -- consistent between the two modes.
+    -- FF-XI elemental-crystal proportions: narrow body, long hexagonal
+    -- middle, short pointed caps. Width drops to ~18*sc so the silhouette
+    -- reads "tall crystal" not "fat diamond". Shoulders push out to 0.62*r
+    -- so the body section dominates and the top/bottom caps are sharp.
     local r      = SKILL_CRYSTAL_R * sc
-    local hw     = (SKILL_CRYSTAL_W - 4) * sc
+    local hw     = 18 * sc
     local cw     = math.max(SKILL_CRYSTAL_CELL_W * sc, hw * 2 + 16)
     local text_block_h = 52
     local ch     = 16 + 2 * r + 6 + text_block_h
@@ -975,7 +976,7 @@ local function skill_gem(sid, pct, color, label, cur_str, cap_str, letter, eff_l
 
     -- 6 vertices, clockwise from top:
     --   1 top  2 ur  3 lr  4 bot  5 ll  6 ul
-    local shoulder = r * 0.42  -- vertical offset of side vertices from cy
+    local shoulder = r * 0.62  -- vertical offset of side vertices from cy
     local v = {
         { cx,      cy - r        },
         { cx + hw, cy - shoulder },
@@ -1023,10 +1024,17 @@ local function skill_gem(sid, pct, color, label, cur_str, cap_str, letter, eff_l
         end
     end
 
-    -- Glow halo: same hex inflated ~6px in the tier color at low alpha.
-    -- Drawn before the trough so the trough overwrites the inner area.
-    local halo = imgui.GetColorU32({ color[1], color[2], color[3], 0.20 })
-    local halo_pad = 6
+    -- Soft glow disk behind everything: a big low-alpha circle in the tier
+    -- color, then the hex halo, then the gem itself. Layers stack to give
+    -- the FF-crystal "lit from within" feel.
+    local glow = imgui.GetColorU32({ color[1], color[2], color[3], 0.14 })
+    dl:AddCircleFilled({ cx, cy }, r * 0.95, glow, 24)
+
+    -- Glow halo: same hex inflated ~9px in the tier color at higher alpha
+    -- so the silhouette gets a clear chromatic outline. Drawn before the
+    -- trough so the trough overwrites the inner area.
+    local halo = imgui.GetColorU32({ color[1], color[2], color[3], 0.32 })
+    local halo_pad = 9
     for i = 1, 6 do
         local a, b = v[i], v[(i % 6) + 1]
         local ax = a[1] + (a[1] - cx) * (halo_pad / r)
@@ -1074,24 +1082,34 @@ local function skill_gem(sid, pct, color, label, cur_str, cap_str, letter, eff_l
         dl:AddLine(v[i], v[(i % 6) + 1], outline, 2.0)
     end
 
-    -- Facet lines: diagonals from the top vertex down to the two side
-    -- shoulder vertices, and a thin vertical seam down the center. These
-    -- give the gem its "cut" look without adding too much visual noise.
-    local facet_dim = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.18 })
-    dl:AddLine(v[1], v[6], facet_dim, 1.0)
-    dl:AddLine(v[1], v[2], facet_dim, 1.0)
+    -- Facet lines: full diagonals from top vertex to both lower-side
+    -- shoulders, full diagonals from bottom vertex to both upper-side
+    -- shoulders, plus a thin vertical seam down the center. Gives the
+    -- crystal six visible facets in classic FF style.
+    local facet_dim = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.22 })
+    dl:AddLine(v[1], v[3], facet_dim, 1.0)
+    dl:AddLine(v[1], v[5], facet_dim, 1.0)
+    dl:AddLine(v[4], v[2], facet_dim, 1.0)
+    dl:AddLine(v[4], v[6], facet_dim, 1.0)
     dl:AddLine({ cx, cy - r }, { cx, cy + r }, facet_dim, 1.0)
 
-    -- Bright highlight stripe along the upper-left face (catches the light).
-    local hi = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.45 })
+    -- Bright highlight stripe along the upper-left face (catches the light)
+    -- plus a softer one on the upper-right for symmetry.
+    local hi_strong = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.55 })
+    local hi_soft   = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.25 })
     dl:AddLine(
         { v[1][1] + (v[6][1] - v[1][1]) * 0.18, v[1][2] + (v[6][2] - v[1][2]) * 0.18 },
-        { v[1][1] + (v[6][1] - v[1][1]) * 0.78, v[1][2] + (v[6][2] - v[1][2]) * 0.78 },
-        hi, 1.5)
+        { v[1][1] + (v[6][1] - v[1][1]) * 0.85, v[1][2] + (v[6][2] - v[1][2]) * 0.85 },
+        hi_strong, 1.8)
+    dl:AddLine(
+        { v[1][1] + (v[2][1] - v[1][1]) * 0.25, v[1][2] + (v[2][2] - v[1][2]) * 0.25 },
+        { v[1][1] + (v[2][1] - v[1][1]) * 0.75, v[1][2] + (v[2][2] - v[1][2]) * 0.75 },
+        hi_soft, 1.2)
 
-    -- Sparkle near the top.
-    local spark = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.70 })
-    dl:AddCircleFilled({ cx - hw * 0.20, cy - r * 0.55 }, 1.2, spark)
+    -- Two sparkles for the "lit gem" feel.
+    local spark = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.75 })
+    dl:AddCircleFilled({ cx - hw * 0.30, cy - r * 0.55 }, 1.4, spark)
+    dl:AddCircleFilled({ cx + hw * 0.40, cy - r * 0.20 }, 1.0, spark)
 
     local shadow = imgui.GetColorU32({ 0, 0, 0, 0.85 })
     local white  = imgui.GetColorU32({ 1, 1, 1, 1.0 })
