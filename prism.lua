@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.4.4'
+addon.version = '0.5.0'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat & magic skill progress with effective level and min mob hints.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -23,7 +23,13 @@ local default_config = T{
     sort_mode    = 'default',-- 'default' | 'grade' | 'lowest' | 'progress'
     show_capped  = false,    -- hide skills that are already at cap for current level
     persist_frac = true,     -- save fractional skill progress to disk; survives /logout
-    chat_skillups = false,   -- enhanced chat line on skillup: "Your X rises 0.3 points (95.4 / 100)"
+    chat_skillups = false,   -- enhanced chat line on skillup
+    -- FFXI chat color codes (0..255) for fractional skillup magnitude. The default
+    -- palette goes gray->cream->cyan so big skillups (0.3+) catch your eye and
+    -- 0.1s fade into the noise. Override via /prism settings.
+    chat_color_low  = 8,     -- color for 0.1 skillups (subtle)
+    chat_color_mid  = 106,   -- color for 0.2 skillups (default cream)
+    chat_color_high = 6,     -- color for 0.3+ skillups (highlight)
     -- Per-skill visibility, keyed by SID (string keys for stable serialization).
     -- nil/missing => visible by default.
     skills_hidden = T{},
@@ -56,6 +62,14 @@ local function normalize_config()
     if type(config.persist_frac) ~= 'boolean' then config.persist_frac = true end
     if type(config.skill_frac) ~= 'table' then config.skill_frac = T{} end
     if type(config.chat_skillups) ~= 'boolean' then config.chat_skillups = false end
+    local function _norm_color(k, dflt)
+        local v = tonumber(config[k])
+        if not v then config[k] = dflt; return end
+        config[k] = math.max(0, math.min(255, math.floor(v)))
+    end
+    _norm_color('chat_color_low',  8)
+    _norm_color('chat_color_mid',  106)
+    _norm_color('chat_color_high', 6)
 end
 normalize_config()
 
@@ -1119,6 +1133,25 @@ local function draw_settings()
         if imgui.Checkbox('Enhanced chat skillup messages', cs_ref) then
             config.chat_skillups = cs_ref[1]; save()
         end
+        if config.chat_skillups then
+            imgui.Indent(16)
+            imgui.TextDisabled('FFXI color codes (0-255). /prism chattest to preview.')
+            imgui.PushItemWidth(60)
+            local cl = { config.chat_color_low }
+            if imgui.InputInt('0.1 color##sp_cl', cl, 0) then
+                config.chat_color_low = math.max(0, math.min(255, cl[1])); save()
+            end
+            local cm = { config.chat_color_mid }
+            if imgui.InputInt('0.2 color##sp_cm', cm, 0) then
+                config.chat_color_mid = math.max(0, math.min(255, cm[1])); save()
+            end
+            local ch = { config.chat_color_high }
+            if imgui.InputInt('0.3+ color##sp_ch', ch, 0) then
+                config.chat_color_high = math.max(0, math.min(255, ch[1])); save()
+            end
+            imgui.PopItemWidth()
+            imgui.Unindent(16)
+        end
 
         imgui.Separator()
         imgui.Text('Skills to show')
@@ -1202,10 +1235,17 @@ local function emit_skillup_chat(sid, kind, value)
     if kind == 'frac' then
         local cur_eff = _cur_int_for_sid(sid) + math.min(0.9, frac_get(sid))
         local capped  = cap and cur_eff >= cap
+        -- Bucket color by magnitude: 0.1 = low, 0.2 = mid, 0.3+ = high.
+        local frac_color = config.chat_color_mid
+        if value <= 1 then
+            frac_color = config.chat_color_low
+        elseif value >= 3 then
+            frac_color = config.chat_color_high
+        end
         local msg = header
             .. CC(106, name)
             .. ' '
-            .. CC(6, ('+0.%d'):format(value))
+            .. CC(frac_color, ('+0.%d'):format(value))
             .. ' ('
             .. CC(capped and 8 or 106, ('%.1f/%s'):format(cur_eff, cap_str))
             .. ')'
@@ -1365,14 +1405,16 @@ ashita.events.register('command', 'sp_command', function(e)
         save()
         say('chat_skillups ' .. (config.chat_skillups and 'ON' or 'OFF'))
     elseif sub == 'chattest' then
-        -- Diagnostic: emit two sample skillup lines regardless of chat_skillups
-        -- state. Use sword (sid=3) so the format renders cleanly.
+        -- Diagnostic: emit one of each magnitude (0.1, 0.2, 0.3) plus a tick,
+        -- so the user can see all three color buckets at once for tuning.
         local was = config.chat_skillups
         config.chat_skillups = true
+        emit_skillup_chat(3, 'frac', 1)
+        emit_skillup_chat(3, 'frac', 2)
         emit_skillup_chat(3, 'frac', 3)
         emit_skillup_chat(3, 'tick', 96)
         config.chat_skillups = was
-        say('chattest: emitted 2 sample lines (chat_skillups state preserved)')
+        say('chattest: emitted 0.1/0.2/0.3 + tick samples (state preserved)')
     elseif sub == 'show' or sub == 'hide' then
         -- /prism show <name>  /prism hide <name>  -- toggle per-skill visibility by name match
         local target = (args[3] or ''):lower()
