@@ -1706,11 +1706,11 @@ local function draw_settings()
                 imgui.SameLine()
                 imgui.TextDisabled(('  %s (%d)'):format(selected_name, current))
             end
-            color_row('0.1',     'chat_color_low')
-            color_row('0.2',     'chat_color_mid')
-            color_row('0.3',     'chat_color_high')
-            color_row('0.4+',    'chat_color_max')
-            color_row('level up','chat_color_tick')
+            color_row('0.1',  'chat_color_low')
+            color_row('0.2',  'chat_color_mid')
+            color_row('0.3',  'chat_color_high')
+            color_row('0.4+', 'chat_color_max')
+            color_row('+1',   'chat_color_tick')
             imgui.Unindent(16)
         end
 
@@ -2056,6 +2056,26 @@ ashita.events.register('command', 'sp_command', function(e)
             cm:AddChatMessage(1, false, header .. body)
         end
         say('colortest: dumped ' .. tostring(#CHAT_PALETTE) .. ' palette codes')
+    elseif sub == 'colorsweep' then
+        -- Calibration: emit every chat color code in a range as a labeled
+        -- sample line, so unknown codes can be found empirically. Usage:
+        --   /prism colorsweep            -> sweeps 1..127
+        --   /prism colorsweep 30 80      -> sweeps 30..80 (inclusive)
+        local cm = AshitaCore and AshitaCore:GetChatManager()
+        if not cm then return end
+        local lo = tonumber(args[3]) or 1
+        local hi = tonumber(args[4]) or 127
+        if lo < 1 then lo = 1 end
+        if hi > 255 then hi = 255 end
+        if hi < lo then hi = lo end
+        local CC = function(color, text) return string.char(0x1E, color) .. text .. string.char(0x1E, 0x01) end
+        local header = CC(102, '[' .. addon.name .. ']') .. ' '
+        for code = lo, hi do
+            local body = ('code %3d   '):format(code)
+                .. CC(code, ('this is color %d  +0.3 / level up'):format(code))
+            cm:AddChatMessage(1, false, header .. body)
+        end
+        say(('colorsweep: dumped codes %d..%d'):format(lo, hi))
     elseif sub == 'diag' then
         -- Diagnostic: for every defined SKILL_NAMES sid, dump engine vs.
         -- table values so we can spot where cap math is going wrong. Use
@@ -2150,6 +2170,7 @@ ashita.events.register('command', 'sp_command', function(e)
         say('  /prism chat on|off|toggle         -- enhanced chat skillup messages')
         say('  /prism chattest                   -- emit 2 sample chat lines (diagnostic)')
         say('  /prism colortest                  -- preview every palette swatch (calibration)')
+        say('  /prism colorsweep [lo] [hi]       -- dump raw code range to find new colors')
         say('  /prism diag                       -- dump engine vs. table caps per skill')
         say('  /prism category <name> [on|off]   -- toggle combat|defense|magic|craft category')
         say('  /prism equippedonly [on|off]      -- Combat: only show currently-equipped weapons')
