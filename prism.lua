@@ -208,12 +208,14 @@ local CHAT_PALETTE = {
     { code = 106, name = 'cream',   rgb = { 1.00, 0.92, 0.65 } },
     { code = 104, name = 'yellow',  rgb = { 1.00, 0.95, 0.35 } },
     { code = 8,   name = 'orange',  rgb = { 1.00, 0.60, 0.25 } },
+    { code = 67,  name = 'red',     rgb = { 1.00, 0.20, 0.20 } },
     { code = 76,  name = 'salmon',  rgb = { 1.00, 0.55, 0.55 } },
     { code = 68,  name = 'pink',    rgb = { 1.00, 0.55, 0.75 } },
     { code = 5,   name = 'magenta', rgb = { 1.00, 0.45, 1.00 } },
     { code = 81,  name = 'violet',  rgb = { 0.70, 0.50, 1.00 } },
     { code = 6,   name = 'cyan',    rgb = { 0.40, 0.95, 1.00 } },
     { code = 2,   name = 'green',   rgb = { 0.35, 1.00, 0.35 } },
+    { code = 91,  name = 'black',   rgb = { 0.10, 0.10, 0.10 } },
 }
 
 -- Cast-gated magic skills only get skillups from casting (self/party
