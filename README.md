@@ -2,7 +2,15 @@
 
 A floating skill overlay for **FFXI** (Ashita v4). Tracks your combat and magic skills with tier-colored crystals, donuts, or pills — plus effective level and minimum mob level hints so you know what to hunt next.
 
-![Prism](assets/prism.png)
+![Prism crystals](assets/crystals.png)
+
+## Display modes
+
+| Crystals (default) | Donuts | Pills |
+|---|---|---|
+| ![Crystals](assets/crystals.png) | ![Donuts](assets/donuts.png) | ![Pills](assets/pills.png) |
+
+Tier color encodes rank: **A+ gold**, **B green**, **C cyan**, **D blue**, **E/F grey**.
 
 ## Features
 
@@ -34,6 +42,12 @@ Skill capture adapted from [Jull256/skilluptracker](https://github.com/Jull256/s
 /prism hide <name>                  -- hide a specific skill
 /prism reset                        -- reset window position
 ```
+
+## Settings panel
+
+![Prism settings](assets/settings.png)
+
+Open with `/prism` or `/pr`. All options persist to Ashita's per-character config.
 
 ## Notes
 
