@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.7.6'
+addon.version = '0.7.7'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat, defense, magic & craft skill progress per main job.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -466,6 +466,13 @@ local function frac_flush()
     end
 end
 
+-- sid -> { delta=number, at=clock } recording the most recent fractional
+-- skillup. Renderers draw a floating "+0.X" overlay near each skill while
+-- this entry is younger than FRAC_FLASH_LIFETIME, then clear it. Declared
+-- before frac_add because frac_add writes to it on each fractional event.
+local skill_frac_flash = T{}
+local FRAC_FLASH_LIFETIME = 1.8
+
 -- Add tenths/10 to the running fractional. Wraps to 0 on >=1.0 overflow
 -- (the integer tick will arrive from memory).
 local function frac_add(sid, delta)
@@ -474,6 +481,11 @@ local function frac_add(sid, delta)
     -- Round to 1 decimal place to keep the persisted Lua table tidy.
     nv = math.floor(nv * 10 + 0.5) / 10
     skill_frac[sid] = nv
+    -- Record the delta for the floating "+0.X" flash overlay. Picked up by
+    -- renderers below; cleared after FRAC_FLASH_LIFETIME via lazy expire.
+    if delta and delta > 0 then
+        skill_frac_flash[sid] = { delta = delta, at = os.clock() }
+    end
     frac_mark_dirty()
 end
 
@@ -527,6 +539,34 @@ local function eased_pct(sid, pct)
         a.pct = a.pct + (pct - a.pct) * k
     end
     return a.pct, now
+end
+
+----------------------------------------------------------------
+-- draw_frac_flash: floating "+0.X" overlay drawn near a skill when a
+-- fractional skillup landed recently. Rises and fades over
+-- FRAC_FLASH_LIFETIME seconds. Anchor point is the top-right of the
+-- skill's visual cell. Each renderer calls this once per skill per frame.
+----------------------------------------------------------------
+local function draw_frac_flash(dl, sid, x_right, y_top, now)
+    local f = skill_frac_flash[sid]
+    if not f then return end
+    local age = now - f.at
+    if age >= FRAC_FLASH_LIFETIME then
+        skill_frac_flash[sid] = nil
+        return
+    end
+    local t = age / FRAC_FLASH_LIFETIME            -- 0..1
+    local alpha = 1.0 - t * t                       -- ease-out fade
+    local rise  = 14 * t                             -- pixels traveled up
+    local txt = string.format('+%.1f', f.delta)
+    local tw, th = imgui.CalcTextSize(txt)
+    tw = tw or 22; th = th or 12
+    local tx = math.floor(x_right - tw)
+    local ty = math.floor(y_top - 2 - rise)
+    local shadow = imgui.GetColorU32({ 0.0, 0.0, 0.0, 0.85 * alpha })
+    local green  = imgui.GetColorU32({ 0.55, 1.0, 0.55, alpha })
+    dl:AddText({ tx + 1, ty + 1 }, shadow, txt)
+    dl:AddText({ tx,     ty     }, green,  txt)
 end
 
 ----------------------------------------------------------------
@@ -699,10 +739,14 @@ local function skill_pill(sid, pct, color, label, forced_width, letter, pill_bad
     end
 
     imgui.Dummy({ width, height })
+
+    -- Floating "+0.X" overlay (drawn last so it sits on top of everything).
+    draw_frac_flash(dl, sid, x0 + width, y0, now)
 end
 
 ----------------------------------------------------------------
 -- skill_donut: radial gauge with OSRS-style interior.
+--   - thick rank-colored arc fills clockwise from 12 o'clock
 --   - small dim rank letter near the top
 --   - big bright effective level number centered
 --   - caption: skill name / cur/cap / "Lv N+" or "cast" hint
@@ -928,6 +972,9 @@ local function skill_donut(sid, pct, color, label, cur_str, cap_str, letter, eff
     end
 
     imgui.Dummy({ cw, ch })
+
+    -- Floating "+0.X" overlay anchored near the top-right of the donut.
+    draw_frac_flash(dl, sid, cx + r_out + 6, cy - r_out - 6, now)
 end
 
 ----------------------------------------------------------------
@@ -1201,6 +1248,9 @@ local function skill_crystal(sid, pct, color, label, cur_str, cap_str, letter, e
     end
 
     imgui.Dummy({ cw, ch })
+
+    -- Floating "+0.X" overlay anchored near the top-right of the crystal.
+    draw_frac_flash(dl, sid, cx + hw + 6, cy - r - 6, now)
 end
 
 ----------------------------------------------------------------

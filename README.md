@@ -2,13 +2,13 @@
 
 A floating skill overlay for **FFXI** (Ashita v4). Shows every skill your main job has access to — combat, defense, magic, and crafting — with tier-colored crystals, donuts, or pills, plus effective level and minimum mob level hints so you know what to hunt next.
 
-![Prism overlay on RDM — all four categories](assets/overlay-rdm.png?v=074)
+![Prism overlay on RDM — all four categories](assets/overlay-rdm.png?v=077)
 
 ## Display modes
 
 | Crystals (default) | Donuts | Pills |
 |---|---|---|
-| ![Crystals](assets/overlay-rdm.png?v=074) | ![Donuts](assets/donuts-rdm.png?v=074) | ![Pills](assets/pills-rdm.png?v=074) |
+| ![Crystals](assets/overlay-rdm.png?v=077) | ![Donuts](assets/donuts-rdm.png?v=077) | ![Pills](assets/pills-rdm.png?v=077) |
 
 Switch with the radio row in `/prism settings` or `/prism mode crystals|donuts|pills`. Tier color encodes rank: **A+ gold**, **B green**, **C cyan**, **D blue**, **E/F grey**.
 
@@ -20,7 +20,7 @@ Prism groups every skill your main job can train into four toggleable categories
 
 HorizonXI's engine returns nil/0 for `GetCap()` on every skill, so Prism's HX-calibrated static tables do all the work. `/prism diag` prints both side by side per skill — the `eng:` column shows what the engine reports, `tbl:` shows what Prism's tables produce:
 
-![Prism diag output](assets/diag-rdm.png?v=074)
+![Prism diag output](assets/diag-rdm.png?v=077)
 
 | Category | What's shown | Filter |
 |---|---|---|
@@ -72,7 +72,7 @@ Skill capture adapted from [Jull256/skilluptracker](https://github.com/Jull256/s
 
 ## Settings panel
 
-![Prism settings — per-job skill list (RDM shown)](assets/settings-rdm.png?v=074)
+![Prism settings — per-job skill list (RDM shown)](assets/settings-rdm.png?v=077)
 
 Open with `/prism` or `/pr`. All options persist to Ashita's per-character config — and "Skills to show" is **saved per job**, so each character's RDM, DRK, RNG, etc. keep their own visibility selections.
 
