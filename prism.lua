@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.7.2'
+addon.version = '0.7.3'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat, defense, magic & craft skill progress per main job.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -17,7 +17,7 @@ local default_config = T{
     visible      = true,
     x            = 20,
     y            = 320,
-    display_mode = 'crystals', -- 'crystals' | 'donuts' | 'pills'
+    display_mode = 'crystals', -- 'crystals' | 'gems' | 'donuts' | 'pills'
     per_row      = 3,        -- 1..N (N = number of visible skills)
     scale        = 1.0,      -- 0.6..2.0 visual scale multiplier
     sort_mode    = 'default',-- 'default' | 'grade' | 'lowest' | 'progress'
@@ -56,7 +56,8 @@ local config = settings.load(default_config)
 local function normalize_config()
     if  config.display_mode ~= 'pills'
     and config.display_mode ~= 'donuts'
-    and config.display_mode ~= 'crystals' then
+    and config.display_mode ~= 'crystals'
+    and config.display_mode ~= 'gems' then
         config.display_mode = 'crystals'
     end
     if type(config.per_row) ~= 'number' then config.per_row = 3 end
@@ -945,8 +946,216 @@ local function skill_crystal(sid, pct, color, label, cur_str, cap_str, letter, e
 
     imgui.Dummy({ cw, ch })
 end
--- isn't applicable (no rank for this job, already at cap and
--- show_capped is off, etc.).
+
+----------------------------------------------------------------
+-- skill_gem: tall hexagonal FFXI elemental-crystal vibe.
+--   - 6-point vertical hex (point top + bottom, two side vertices each)
+--   - Outer glow halo in tier color
+--   - Dark trough, fill rising from the bottom (polygon clipped)
+--   - Bright vertical facet seam down the center
+--   - Two diagonal cut lines from the top vertex (gem suggestion)
+--   - Rank pill on top, eff_lvl center, caption below (same as crystal)
+----------------------------------------------------------------
+local function skill_gem(sid, pct, color, label, cur_str, cap_str, letter, eff_lvl, min_mob_lvl, is_cast_gated)
+    local draw_pct, now = eased_pct(sid, pct)
+
+    local x0, y0 = imgui.GetCursorScreenPos()
+    local sc     = config.scale or 1.0
+    -- Hex is taller and a touch narrower than the diamond so it reads as a
+    -- "crystal" not a "gem". Reuse the crystal cell width so per-row math is
+    -- consistent between the two modes.
+    local r      = SKILL_CRYSTAL_R * sc
+    local hw     = (SKILL_CRYSTAL_W - 4) * sc
+    local cw     = math.max(SKILL_CRYSTAL_CELL_W * sc, hw * 2 + 16)
+    local text_block_h = 52
+    local ch     = 16 + 2 * r + 6 + text_block_h
+    local cx     = x0 + cw * 0.5
+    local cy     = y0 + r + 16
+    local dl     = imgui.GetWindowDrawList()
+
+    -- 6 vertices, clockwise from top:
+    --   1 top  2 ur  3 lr  4 bot  5 ll  6 ul
+    local shoulder = r * 0.42  -- vertical offset of side vertices from cy
+    local v = {
+        { cx,      cy - r        },
+        { cx + hw, cy - shoulder },
+        { cx + hw, cy + shoulder },
+        { cx,      cy + r        },
+        { cx - hw, cy + shoulder },
+        { cx - hw, cy - shoulder },
+    }
+
+    -- Rank pill straddling the top vertex (matches crystal mode).
+    if letter and letter ~= '' then
+        local lw, lh = imgui.CalcTextSize(letter)
+        lw = lw or 0; lh = lh or 10
+        local pw, ph = lw + 12, lh + 4
+        local px, py = cx - pw * 0.5, (cy - r) - ph + 2
+        local pillbg = imgui.GetColorU32({ 0.07, 0.08, 0.11, 0.95 })
+        local pillb  = imgui.GetColorU32({ color[1], color[2], color[3], 0.95 })
+        dl:AddRectFilled({ px, py }, { px + pw, py + ph }, pillbg, 3, 15)
+        dl:AddRect({ px, py }, { px + pw, py + ph }, pillb, 3, 15, 1.6)
+        local shadow = imgui.GetColorU32({ 0, 0, 0, 0.85 })
+        local txtcol = imgui.GetColorU32({ 0.95, 0.97, 1.0, 1.0 })
+        dl:AddText({ px + 6 + 1, py + 2 + 1 }, shadow, letter)
+        dl:AddText({ px + 6,     py + 2     }, txtcol, letter)
+    end
+
+    -- Tick burst: expanding hex outline fading over 500ms.
+    local burst_t = skill_tick_burst[sid]
+    if burst_t then
+        local bdt = now - burst_t
+        if bdt < 0.5 then
+            local s   = 1 - bdt / 0.5
+            local bc  = imgui.GetColorU32({ color[1], color[2], color[3], 0.7 * s })
+            local pad = bdt * 12
+            for i = 1, 6 do
+                local a = v[i]
+                local b = v[(i % 6) + 1]
+                local ax = a[1] + (a[1] - cx) * (pad / r)
+                local ay = a[2] + (a[2] - cy) * (pad / r)
+                local bx = b[1] + (b[1] - cx) * (pad / r)
+                local by = b[2] + (b[2] - cy) * (pad / r)
+                dl:AddLine({ ax, ay }, { bx, by }, bc, 1.5)
+            end
+        else
+            skill_tick_burst[sid] = nil
+        end
+    end
+
+    -- Glow halo: same hex inflated ~6px in the tier color at low alpha.
+    -- Drawn before the trough so the trough overwrites the inner area.
+    local halo = imgui.GetColorU32({ color[1], color[2], color[3], 0.20 })
+    local halo_pad = 6
+    for i = 1, 6 do
+        local a, b = v[i], v[(i % 6) + 1]
+        local ax = a[1] + (a[1] - cx) * (halo_pad / r)
+        local ay = a[2] + (a[2] - cy) * (halo_pad / r)
+        local bx = b[1] + (b[1] - cx) * (halo_pad / r)
+        local by = b[2] + (b[2] - cy) * (halo_pad / r)
+        dl:AddTriangleFilled({ cx, cy }, { ax, ay }, { bx, by }, halo)
+    end
+
+    -- Trough: dark hex, fan from center.
+    local trough = imgui.GetColorU32({ 0.06, 0.07, 0.10, 0.98 })
+    for i = 1, 6 do
+        dl:AddTriangleFilled({ cx, cy }, v[i], v[(i % 6) + 1], trough)
+    end
+
+    -- Fill rising from the bottom: clip hex against horizontal line y=cap_y.
+    if draw_pct > 0.01 then
+        local cap_y = cy + r - (2 * r) * draw_pct
+        local poly = {}
+        for i = 1, 6 do
+            local a = v[i]
+            local b = v[(i % 6) + 1]
+            local a_in = a[2] >= cap_y
+            local b_in = b[2] >= cap_y
+            if a_in then poly[#poly + 1] = a end
+            if a_in ~= b_in then
+                local dy = b[2] - a[2]
+                if dy ~= 0 then
+                    local t = (cap_y - a[2]) / dy
+                    poly[#poly + 1] = { a[1] + t * (b[1] - a[1]), cap_y }
+                end
+            end
+        end
+        if #poly >= 3 then
+            local fc = imgui.GetColorU32({ color[1], color[2], color[3], 1.0 })
+            for i = 2, #poly - 1 do
+                dl:AddTriangleFilled(poly[1], poly[i], poly[i + 1], fc)
+            end
+        end
+    end
+
+    -- Outline.
+    local outline = imgui.GetColorU32({ color[1], color[2], color[3], 0.95 })
+    for i = 1, 6 do
+        dl:AddLine(v[i], v[(i % 6) + 1], outline, 2.0)
+    end
+
+    -- Facet lines: diagonals from the top vertex down to the two side
+    -- shoulder vertices, and a thin vertical seam down the center. These
+    -- give the gem its "cut" look without adding too much visual noise.
+    local facet_dim = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.18 })
+    dl:AddLine(v[1], v[6], facet_dim, 1.0)
+    dl:AddLine(v[1], v[2], facet_dim, 1.0)
+    dl:AddLine({ cx, cy - r }, { cx, cy + r }, facet_dim, 1.0)
+
+    -- Bright highlight stripe along the upper-left face (catches the light).
+    local hi = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.45 })
+    dl:AddLine(
+        { v[1][1] + (v[6][1] - v[1][1]) * 0.18, v[1][2] + (v[6][2] - v[1][2]) * 0.18 },
+        { v[1][1] + (v[6][1] - v[1][1]) * 0.78, v[1][2] + (v[6][2] - v[1][2]) * 0.78 },
+        hi, 1.5)
+
+    -- Sparkle near the top.
+    local spark = imgui.GetColorU32({ 1.0, 1.0, 1.0, 0.70 })
+    dl:AddCircleFilled({ cx - hw * 0.20, cy - r * 0.55 }, 1.2, spark)
+
+    local shadow = imgui.GetColorU32({ 0, 0, 0, 0.85 })
+    local white  = imgui.GetColorU32({ 1, 1, 1, 1.0 })
+    local dim    = imgui.GetColorU32({ 0.70, 0.74, 0.80, 1.0 })
+
+    -- Big effective level centered inside.
+    if eff_lvl then
+        local s = tostring(eff_lvl)
+        local nw, nh = imgui.CalcTextSize(s)
+        nw = nw or 0; nh = nh or 12
+        local nx = cx - nw * 0.5
+        local ny = cy - nh * 0.5
+        dl:AddText({ nx + 1, ny + 1 }, shadow, s)
+        dl:AddText({ nx,     ny     }, white,  s)
+    end
+
+    -- Caption: name / cur/cap / hint, below the gem.
+    local cap_yt = cy + r + 4
+    if label then
+        local maxw = cw - 4
+        local lstr = label
+        local lw   = imgui.CalcTextSize(lstr) or 0
+        while lw > maxw and #lstr > 1 do
+            lstr = lstr:sub(1, -2)
+            lw   = imgui.CalcTextSize(lstr) or 0
+        end
+        local lh
+        lw, lh = imgui.CalcTextSize(lstr)
+        lw = lw or 0; lh = lh or 12
+        local lx = x0 + (cw - lw) * 0.5
+        dl:AddText({ lx + 1, cap_yt + 1 }, shadow, lstr)
+        dl:AddText({ lx,     cap_yt     }, white,  lstr)
+        cap_yt = cap_yt + lh + 1
+    end
+    if cur_str then
+        local sub = cap_str and (cur_str .. '/' .. cap_str) or cur_str
+        local sw, sh = imgui.CalcTextSize(sub)
+        sw = sw or 0; sh = sh or 12
+        local sx = x0 + (cw - sw) * 0.5
+        dl:AddText({ sx + 1, cap_yt + 1 }, shadow, sub)
+        dl:AddText({ sx,     cap_yt     }, dim,    sub)
+        cap_yt = cap_yt + sh + 1
+    end
+    local hint
+    if is_cast_gated then hint = 'cast'
+    elseif min_mob_lvl then hint = ('Lv %d+'):format(min_mob_lvl) end
+    if hint then
+        local hw2, hh = imgui.CalcTextSize(hint)
+        hw2 = hw2 or 0; hh = hh or 12
+        local hx = x0 + (cw - hw2) * 0.5
+        local accent = is_cast_gated
+            and imgui.GetColorU32({ 0.55, 0.70, 0.95, 0.95 })
+            or  imgui.GetColorU32({ 0.95, 0.82, 0.45, 0.95 })
+        dl:AddText({ hx + 1, cap_yt + 1 }, shadow, hint)
+        dl:AddText({ hx,     cap_yt     }, accent, hint)
+    end
+
+    imgui.Dummy({ cw, ch })
+end
+
+----------------------------------------------------------------
+-- prepare: build a renderable item table for one skill, or return nil
+-- if the skill shouldn't be shown for this job/category (no rank, not
+-- yet trained for crafts, already at cap with show_capped off, etc.).
 ----------------------------------------------------------------
 local function prepare(sid, category, job_id, mjl)
     if not sid then return nil end
@@ -1154,6 +1363,17 @@ local function draw_frame()
                 imgui.SameLine(0, 4)
             end
         end
+    elseif mode == 'gems' then
+        local per_row = config.per_row
+        for i, item in ipairs(items) do
+            local cap_str = item.cap and tostring(item.cap) or nil
+            skill_gem(item.sid, item.pct, item.color, item.label,
+                      item.cur_str, cap_str, item.letter, item.eff_lvl,
+                      item.min_mob_lvl, item.is_cast_gated)
+            if per_row > 1 and i % per_row ~= 0 and i < #items then
+                imgui.SameLine(0, 4)
+            end
+        end
     else
         imgui.PushStyleVar(ImGuiStyleVar_ItemSpacing, { 4, 1 })
         for _, item in ipairs(items) do render_pill_line(item) end
@@ -1229,6 +1449,10 @@ local function draw_settings()
         imgui.Text('Display Mode')
         if imgui.RadioButton('Crystals##sp_mode_c', config.display_mode == 'crystals') then
             config.display_mode = 'crystals'; save()
+        end
+        imgui.SameLine()
+        if imgui.RadioButton('Gems##sp_mode_g', config.display_mode == 'gems') then
+            config.display_mode = 'gems'; save()
         end
         imgui.SameLine()
         if imgui.RadioButton('Donuts##sp_mode_d', config.display_mode == 'donuts') then
@@ -1633,10 +1857,10 @@ ashita.events.register('command', 'sp_command', function(e)
         say('overlay ' .. (config.visible and 'ON' or 'OFF'))
     elseif sub == 'mode' then
         local m = args[3] and args[3]:lower()
-        if m == 'pills' or m == 'donuts' or m == 'crystals' then
+        if m == 'pills' or m == 'donuts' or m == 'crystals' or m == 'gems' then
             config.display_mode = m; save(); say('mode = ' .. m)
         else
-            say('usage: /prism mode pills|donuts|crystals (current: ' .. config.display_mode .. ')')
+            say('usage: /prism mode crystals|gems|donuts|pills (current: ' .. config.display_mode .. ')')
         end
     elseif sub == 'perrow' or sub == 'per_row' or sub == 'pr' then
         local n = tonumber(args[3])
@@ -1792,7 +2016,7 @@ ashita.events.register('command', 'sp_command', function(e)
         say('commands:')
         say('  /prism on|off|toggle              -- show/hide overlay')
         say('  /prism settings                   -- open settings panel')
-        say('  /prism mode crystals|donuts|pills -- display style')
+        say('  /prism mode crystals|gems|donuts|pills -- display style')
         say('  /prism perrow 1..24               -- items per row')
         say('  /prism capped                     -- toggle showing capped skills')
         say('  /prism persistfrac on|off|toggle  -- persist fractional skill progress')
