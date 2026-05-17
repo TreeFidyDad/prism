@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.4.3'
+addon.version = '0.4.4'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat & magic skill progress with effective level and min mob hints.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -1192,25 +1192,34 @@ local function emit_skillup_chat(sid, kind, value)
     local name = SKILL_NAMES[sid] or ('Skill#' .. sid)
     local cap  = _cap_for_sid(sid)
     local cap_str = cap and tostring(cap) or '?'
+    local cm = AshitaCore and AshitaCore:GetChatManager()
+    if not cm then return end
+    -- Build directly with FFXI color bytes (\x1E + color + text + \x1E\x01).
+    -- AddChatMessage(mode, indexed=false, msg) bypasses text_in so external
+    -- filters (including our own anti-double-print) cannot eat our output.
+    local CC = function(color, text) return string.char(0x1E, color) .. text .. string.char(0x1E, 0x01) end
+    local header = CC(102, '[' .. addon.name .. ']') .. ' '
     if kind == 'frac' then
         local cur_eff = _cur_int_for_sid(sid) + math.min(0.9, frac_get(sid))
         local capped  = cap and cur_eff >= cap
-        local cur_str = ('%.1f / %s'):format(cur_eff, cap_str)
-        print(chat.header(addon.name)
-            :append(chat.message('Your '))
-            :append(chat.color1(106, name))
-            :append(chat.message(' skill rises '))
-            :append(chat.color1(106, ('0.%d points'):format(value)))
-            :append(chat.message(' ('))
-            :append(chat.color1(capped and 8 or 106, cur_str))
-            :append(chat.message(')')))
+        local msg = header
+            .. CC(106, name)
+            .. ' '
+            .. CC(6, ('+0.%d'):format(value))
+            .. ' ('
+            .. CC(capped and 8 or 106, ('%.1f/%s'):format(cur_eff, cap_str))
+            .. ')'
+        cm:AddChatMessage(1, false, msg)
     elseif kind == 'tick' then
         local capped = cap and value >= cap
-        print(chat.header(addon.name)
-            :append(chat.message('Your '))
-            :append(chat.color1(106, name))
-            :append(chat.message(' skill reaches level '))
-            :append(chat.color1(capped and 8 or 106, ('%d / %s'):format(value, cap_str))))
+        local msg = header
+            .. CC(106, name)
+            .. ' '
+            .. CC(6, 'level up')
+            .. ' ('
+            .. CC(capped and 8 or 106, ('%d/%s'):format(value, cap_str))
+            .. ')'
+        cm:AddChatMessage(1, false, msg)
     end
 end
 
@@ -1356,22 +1365,14 @@ ashita.events.register('command', 'sp_command', function(e)
         save()
         say('chat_skillups ' .. (config.chat_skillups and 'ON' or 'OFF'))
     elseif sub == 'chattest' then
-        -- Diagnostic: emit sample lines + isolate which path is failing.
+        -- Diagnostic: emit two sample skillup lines regardless of chat_skillups
+        -- state. Use sword (sid=3) so the format renders cleanly.
         local was = config.chat_skillups
         config.chat_skillups = true
-        say('chattest step 1: plain say() works (you see this)')
-        local ok1, err1 = pcall(emit_skillup_chat, 3, 'frac', 3)
-        if not ok1 then say('chattest step 2 ERROR (frac emit): ' .. tostring(err1)) end
-        local ok2, err2 = pcall(emit_skillup_chat, 3, 'tick', 96)
-        if not ok2 then say('chattest step 3 ERROR (tick emit): ' .. tostring(err2)) end
-        -- Raw plain-text emit (no chat.color1 chain) to test if the issue is the color codes:
-        print(chat.header(addon.name):append(chat.message('chattest step 4 plain: Your Sword skill rises 0.3 points (95.4 / 100)')))
-        -- Direct AddChatMessage path (bypasses print/text_in entirely):
-        if AshitaCore and AshitaCore.GetChatManager then
-            AshitaCore:GetChatManager():AddChatMessage(106, false, '[prism] chattest step 5 AddChatMessage: Your Sword skill rises 0.3 points')
-        end
+        emit_skillup_chat(3, 'frac', 3)
+        emit_skillup_chat(3, 'tick', 96)
         config.chat_skillups = was
-        say('chattest done (emit ok1=' .. tostring(ok1) .. ' ok2=' .. tostring(ok2) .. ')')
+        say('chattest: emitted 2 sample lines (chat_skillups state preserved)')
     elseif sub == 'show' or sub == 'hide' then
         -- /prism show <name>  /prism hide <name>  -- toggle per-skill visibility by name match
         local target = (args[3] or ''):lower()
