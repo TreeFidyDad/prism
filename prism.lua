@@ -39,6 +39,7 @@ local default_config = T{
     chat_color_mid  = 6,     -- color for 0.2 skillups (cyan, noticeable)
     chat_color_high = 76,    -- color for 0.3 skillups (salmon, loud)
     chat_color_max  = 5,     -- color for 0.4+ skillups (magenta, jackpot)
+    chat_color_tick = 6,     -- color for "level up" integer ticks (cyan, celebratory)
     -- Per-skill visibility, keyed by SID (string keys for stable serialization).
     -- nil/missing => visible by default. Legacy global table (pre-0.7.2);
     -- kept for back-compat as a fallback when no per-job entry exists.
@@ -1705,10 +1706,11 @@ local function draw_settings()
                 imgui.SameLine()
                 imgui.TextDisabled(('  %s (%d)'):format(selected_name, current))
             end
-            color_row('0.1',  'chat_color_low')
-            color_row('0.2',  'chat_color_mid')
-            color_row('0.3',  'chat_color_high')
-            color_row('0.4+', 'chat_color_max')
+            color_row('0.1',     'chat_color_low')
+            color_row('0.2',     'chat_color_mid')
+            color_row('0.3',     'chat_color_high')
+            color_row('0.4+',    'chat_color_max')
+            color_row('level up','chat_color_tick')
             imgui.Unindent(16)
         end
 
@@ -1869,7 +1871,7 @@ local function emit_skillup_chat(sid, kind, value)
         local msg = header
             .. CC(106, name)
             .. ' '
-            .. CC(6, 'level up')
+            .. CC(config.chat_color_tick or 6, 'level up')
             .. ' ('
             .. CC(capped and 8 or 106, ('%d/%s'):format(value, cap_str))
             .. ')'
