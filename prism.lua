@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.6.0'
+addon.version = '0.6.1'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat & magic skill progress with effective level and min mob hints.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -104,8 +104,13 @@ local SKILL_NAMES = {
     [1]='H2H', [2]='Dagger', [3]='Sword', [4]='GSword', [5]='Axe', [6]='GAxe',
     [7]='Scythe', [8]='Polearm', [9]='Katana', [10]='GKatana', [11]='Club',
     [12]='Staff', [25]='Archery', [26]='Marksmanship', [27]='Throwing',
+    -- defensive (passive, leveled by being hit / blocking / parrying)
+    [28]='Guard', [29]='Evasion', [30]='Shield', [31]='Parry',
     [32]='Divine', [33]='Healing', [34]='Enhancing', [35]='Enfeebling',
     [36]='Elemental', [37]='Dark', [38]='Summoning', [39]='Ninjutsu',
+    -- crafting / gathering (chat-line only -- no rank table, cap from engine)
+    [48]='Fishing', [49]='Wood', [50]='Smith', [51]='Gold', [52]='Cloth',
+    [53]='Leather', [54]='Bone', [55]='Alchemy', [56]='Cooking',
 }
 
 local MAGIC_SKILL_IDS = { 33, 34, 35, 32, 36, 37, 38, 39 }
@@ -365,9 +370,14 @@ local CHAT_SKILL_NAMES = {
     ['hand-to-hand']=1,['dagger']=2,['sword']=3,['great sword']=4,['axe']=5,
     ['great axe']=6,['scythe']=7,['polearm']=8,['katana']=9,['great katana']=10,
     ['club']=11,['staff']=12,['archery']=25,['marksmanship']=26,['throwing']=27,
+    ['guarding']=28, ['guard']=28, ['evasion']=29, ['shield']=30,
+    ['parrying']=31, ['parry']=31,
     ['divine magic']=32, ['healing magic']=33, ['enhancing magic']=34,
     ['enfeebling magic']=35, ['elemental magic']=36, ['dark magic']=37,
     ['summoning magic']=38, ['ninjutsu']=39,
+    ['fishing']=48, ['woodworking']=49, ['smithing']=50, ['goldsmithing']=51,
+    ['clothcraft']=52, ['leathercraft']=53, ['bonecraft']=54,
+    ['alchemy']=55, ['cooking']=56,
 }
 
 ----------------------------------------------------------------
@@ -1267,6 +1277,11 @@ end)
 -- OFF so we don't double-print for users running skilluptracker too.
 ----------------------------------------------------------------
 local function _cap_for_sid(sid)
+    -- Prefer the engine's reported cap (covers defensive 28-31 and crafting
+    -- 48+ which have no static rank tables; also covers HorizonXI rank
+    -- divergence from retail). Static rank+CAP_REF math is the fallback.
+    local _, _, engine_cap = get_combat_skill(sid)
+    if engine_cap and engine_cap > 0 then return engine_cap end
     local pl = AshitaCore:GetMemoryManager():GetPlayer()
     if not pl then return nil end
     local job_id = pl:GetMainJob()
@@ -1353,10 +1368,12 @@ ashita.events.register('packet_in', 'sp_packet_cb', function(e)
     if msgnum == 38 then
         local sid    = struct.unpack('L', e.data, 0x0C + 0x01)
         local tenths = struct.unpack('L', e.data, 0x10 + 0x01)
-        if sid and tenths and sid > 0 and sid < 48 then
+        if sid and tenths and sid > 0 and sid <= 56 then
             frac_add(sid, (tenths or 0) / 10)
             _skillup_pkt_at[sid] = os.clock()
-            if config.chat_skillups then
+            -- Only emit + suppress for skills we have a label for. Unknown
+            -- skill IDs fall through so the game's native message still shows.
+            if config.chat_skillups and SKILL_NAMES[sid] then
                 emit_skillup_chat(sid, 'frac', tenths)
                 e.blocked = true
             end
@@ -1364,10 +1381,10 @@ ashita.events.register('packet_in', 'sp_packet_cb', function(e)
     elseif msgnum == 53 then
         local sid    = struct.unpack('L', e.data, 0x0C + 0x01)
         local newint = struct.unpack('L', e.data, 0x10 + 0x01)
-        if sid and sid > 0 and sid < 48 then
+        if sid and sid > 0 and sid <= 56 then
             frac_reset(sid)
             _skillup_pkt_at[sid] = os.clock()
-            if config.chat_skillups then
+            if config.chat_skillups and SKILL_NAMES[sid] then
                 emit_skillup_chat(sid, 'tick', newint or 0)
                 e.blocked = true
             end
@@ -1385,6 +1402,7 @@ ashita.events.register('text_in', 'sp_text_in', function(e)
     local s = e and e.message or ''
     if s == '' then return end
     -- Fractional capture (fallback if packet_in didn't fire). Dedupes via _skillup_pkt_at.
+    local emitted_replacement = false
     local name, frac = s:match('([%a%-]+[%a%- ]*)%s*skill rises[%s%a]*0%.(%d)')
     if name and frac then
         local sid = CHAT_SKILL_NAMES[name:lower():gsub('^your%s+',''):gsub('%s+$','')]
@@ -1396,15 +1414,22 @@ ashita.events.register('text_in', 'sp_text_in', function(e)
                 -- packet_in didn't beat us to it; emit the enhanced line ourselves.
                 if config.chat_skillups then
                     emit_skillup_chat(sid, 'frac', tonumber(frac) or 0)
+                    emitted_replacement = true
                 end
+            else
+                -- packet path already emitted; we still need to suppress the
+                -- native chat line that follows so it isn't double-printed.
+                emitted_replacement = config.chat_skillups
             end
         end
     end
-    -- When chat_skillups is on, suppress the game's default "skill rises / reaches"
-    -- chat line so users see only the enhanced version. Same blocking pattern as
-    -- skilluptracker uses to avoid double-printing. CRITICAL: do not block our
-    -- own emitted lines (they carry the [prism] header), or the addon eats itself.
+    -- Only suppress the game's native "skill rises / reaches" line when we
+    -- actually emitted (or are about to emit, via the packet path) a
+    -- replacement. Skills we don't recognize -- e.g. an unmapped craft or a
+    -- new skill ID -- pass through unaltered so the user still sees them.
+    -- Never block our own emitted lines or the addon eats itself.
     if config.chat_skillups
+        and emitted_replacement
         and (s:match('skill rises') or s:match('skill reaches'))
         and not s:find('[' .. addon.name .. ']', 1, true) then
         e.blocked = true
