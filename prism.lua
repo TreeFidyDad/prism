@@ -1,7 +1,7 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.6.1'
-addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat & magic skill progress with effective level and min mob hints.'
+addon.version = '0.7.0'
+addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat, defense, magic & craft skill progress per main job.'
 addon.commands  = { '/prism', '/pr' }
 
 require('common')
@@ -22,6 +22,12 @@ local default_config = T{
     scale        = 1.0,      -- 0.6..2.0 visual scale multiplier
     sort_mode    = 'default',-- 'default' | 'grade' | 'lowest' | 'progress'
     show_capped  = false,    -- hide skills that are already at cap for current level
+    -- Category visibility — Prism shows ALL skills your main job has access to,
+    -- grouped by category. Toggle a category off to hide its whole group.
+    show_combat  = true,     -- weapons + ranged
+    show_defense = true,     -- Guard / Evasion / Shield / Parry
+    show_magic   = true,     -- main-job casting schools only (not sub-job spillover)
+    show_craft   = true,     -- crafting + fishing (only the ones you've trained)
     persist_frac = true,     -- save fractional skill progress to disk; survives /logout
     chat_skillups = false,   -- enhanced chat line on skillup
     -- FFXI chat color codes (0..255) for fractional skillup magnitude. Defaults
@@ -62,6 +68,10 @@ local function normalize_config()
     if type(config.persist_frac) ~= 'boolean' then config.persist_frac = true end
     if type(config.skill_frac) ~= 'table' then config.skill_frac = T{} end
     if type(config.chat_skillups) ~= 'boolean' then config.chat_skillups = false end
+    if type(config.show_combat)  ~= 'boolean' then config.show_combat  = true end
+    if type(config.show_defense) ~= 'boolean' then config.show_defense = true end
+    if type(config.show_magic)   ~= 'boolean' then config.show_magic   = true end
+    if type(config.show_craft)   ~= 'boolean' then config.show_craft   = true end
     local function _norm_color(k, dflt)
         local v = tonumber(config[k])
         if not v then config[k] = dflt; return end
@@ -115,6 +125,24 @@ local SKILL_NAMES = {
 
 local MAGIC_SKILL_IDS = { 33, 34, 35, 32, 36, 37, 38, 39 }
 
+-- Skill IDs grouped by the four overlay categories Prism shows.
+-- combat:  weapons + ranged. Filtered by JOB_SKILL_RANK[job].
+-- defense: passive blocks. Filtered by JOB_SKILL_RANK[job] (Evasion/Parry/Shield/Guard).
+-- magic:   casting schools. Filtered by JOB_MAGIC_SKILL_RANK[job] (cast allowlist).
+-- craft:   crafting + fishing. Not job-gated; shown only when trained (cur>0 or frac>0).
+local SKILL_CATEGORIES = {
+    combat  = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 25, 26, 27 },
+    defense = { 28, 29, 30, 31 },
+    magic   = { 32, 33, 34, 35, 36, 37, 38, 39 },
+    craft   = { 48, 49, 50, 51, 52, 53, 54, 55, 56 },
+}
+
+-- Inverse lookup: sid -> category. Built lazily.
+local SKILL_CATEGORY = {}
+for cat, sids in pairs(SKILL_CATEGORIES) do
+    for _, sid in ipairs(sids) do SKILL_CATEGORY[sid] = cat end
+end
+
 -- FFXI chat color palette for the skillup-color picker. Each entry is a
 -- single-byte color code that AshitaCore can render in chat (\30<code>), paired
 -- with an approximate sRGB triple so we can draw clickable swatches in the
@@ -151,60 +179,62 @@ local RANK_SLOPES = {
     [6]=3.24, [7]=3.08, [8]=2.92, [9]=2.69, [10]=2.47, [11]=2.24, [12]=2.02,
 }
 
+-- HorizonXI-calibrated cap reference, parsed from server data.
+-- Indices use the retail 12-slot scheme; HX has no plain "A" rank so
+-- slot 1 mirrors slot 2 (A-) for compatibility with any legacy values.
+-- Caps interpolate linearly between breakpoints in skill_cap_for().
 local CAP_REF = {
-    [0]  = {{1,6},{2,9}, {5,18},{10,39},{15,56},{20,74},{25,92},{30,111},{35,130},{40,148},{45,165},{50,200},{60,230},{75,276}}, -- A+
-    [1]  = {{1,6},{2,8}, {5,18},{10,37},{15,53},{20,70},{25,87},{30,104},{35,122},{40,140},{45,158},{50,196},{60,225},{75,272}}, -- A
-    [2]  = {{1,6},{2,8}, {5,18},{10,33},{15,48},{20,63},{25,78},{30,93},{35,108},{40,123},{45,138},{50,153},{55,178},{60,203},{65,223},{70,244},{75,269}}, -- A-
-    [3]  = {{1,5},{2,7}, {5,17},{10,34},{15,48},{20,64},{25,80},{30,96}, {35,112},{40,130},{45,148},{50,185},{60,213},{75,261}}, -- B+
-    [4]  = {{1,5},{2,7}, {5,16},{10,33},{15,46},{20,61},{25,77},{30,92}, {35,108},{40,124},{45,142},{50,178},{60,205},{75,252}}, -- B
-    [5]  = {{1,5},{2,7}, {5,16},{10,31},{15,44},{20,58},{25,74},{30,88}, {35,104},{40,119},{45,138},{50,171},{60,197},{75,243}}, -- B-
-    [6]  = {{1,5},{2,7}, {5,16},{10,30},{15,42},{20,56},{25,70},{30,85}, {35,99}, {40,114},{45,132},{50,164},{60,189},{75,234}}, -- C+
-    [7]  = {{1,5},{2,7}, {5,15},{10,29},{15,40},{20,53},{25,67},{30,81}, {35,95}, {40,108},{45,124},{50,156},{60,180},{75,225}}, -- C
-    [8]  = {{1,5},{2,7}, {5,15},{10,27},{15,38},{20,51},{25,64},{30,77}, {35,90}, {40,102},{45,118},{50,148},{60,170},{75,215}}, -- C-
-    [9]  = {{1,5},{2,6}, {5,14},{10,25},{15,35},{20,46},{25,58},{30,70}, {35,82}, {40,93}, {45,108},{50,137},{60,158},{75,200}}, -- D
-    [10] = {{1,5},{2,6}, {5,13},{10,23},{15,31},{20,41},{25,52},{30,63}, {35,74}, {40,84}, {45,98}, {50,126},{60,145},{75,182}}, -- E
-    [11] = {{1,5},{2,6}, {5,12},{10,21},{15,28},{20,37},{25,47},{30,57}, {35,67}, {40,76}, {45,89}, {50,115},{60,133},{75,167}}, -- F
+    [0]  = { {1,6},{2,9},{5,18},{10,33},{15,48},{20,63},{25,78},{30,93},{35,108},{40,123},{45,138},{50,153},{55,178},{60,203},{65,227},{70,251},{75,276} }, -- A+
+    [1]  = { {1,6},{2,9},{5,18},{10,33},{15,48},{20,63},{25,78},{30,93},{35,108},{40,123},{45,138},{50,153},{55,178},{60,203},{65,223},{70,244},{75,269} }, -- A (HX uses A-)
+    [2]  = { {1,6},{2,9},{5,18},{10,33},{15,48},{20,63},{25,78},{30,93},{35,108},{40,123},{45,138},{50,153},{55,178},{60,203},{65,223},{70,244},{75,269} }, -- A-
+    [3]  = { {1,5},{2,7},{5,16},{10,31},{15,45},{20,60},{25,74},{30,89},{35,103},{40,118},{45,132},{50,147},{55,171},{60,196},{65,214},{70,233},{75,256} }, -- B+
+    [4]  = { {1,5},{2,7},{5,16},{10,31},{15,45},{20,60},{25,74},{30,89},{35,103},{40,118},{45,132},{50,147},{55,171},{60,196},{65,212},{70,228},{75,250} }, -- B
+    [5]  = { {1,5},{2,7},{5,16},{10,31},{15,45},{20,60},{25,74},{30,89},{35,103},{40,118},{45,132},{50,147},{55,171},{60,196},{65,209},{70,223},{75,240} }, -- B-
+    [6]  = { {1,5},{2,7},{5,16},{10,30},{15,44},{20,58},{25,72},{30,86},{35,100},{40,114},{45,128},{50,142},{55,166},{60,190},{65,202},{70,215},{75,230} }, -- C+
+    [7]  = { {1,5},{2,7},{5,16},{10,30},{15,44},{20,58},{25,72},{30,86},{35,100},{40,114},{45,128},{50,142},{55,166},{60,190},{65,201},{70,212},{75,225} }, -- C
+    [8]  = { {1,5},{2,7},{5,16},{10,30},{15,44},{20,58},{25,72},{30,86},{35,100},{40,114},{45,128},{50,142},{55,166},{60,190},{65,200},{70,210},{75,220} }, -- C-
+    [9]  = { {1,4},{2,6},{5,14},{10,28},{15,41},{20,55},{25,68},{30,82},{35,95}, {40,109},{45,122},{50,136},{55,159},{60,183},{65,192},{70,201},{75,210} }, -- D
+    [10] = { {1,4},{2,6},{5,14},{10,26},{15,39},{20,51},{25,64},{30,76},{35,89}, {40,101},{45,114},{50,126},{55,148},{60,171},{65,180},{70,190},{75,200} }, -- E
+    [11] = { {1,4},{2,6},{5,13},{10,24},{15,36},{20,47},{25,59},{30,70},{35,82}, {40,93}, {45,105},{50,116},{55,137},{60,159},{65,169},{70,179},{75,189} }, -- F
 }
 
+-- HorizonXI-calibrated job→skill ranks. Includes combat (1-12), ranged
+-- (25-27) and defense (28-31) all in one table — these are the skills
+-- the job has main-job access to. Missing entry = skill not granted by
+-- this main job (e.g. DRK does not see Polearm/Katana/etc).
+-- Source: HorizonXI server data, transcribed from /skill-caps reference.
+-- Post-ToAU jobs (BLU/COR/PUP/DNC/SCH/GEO/RUN) are omitted; HX is 75-cap era.
 local JOB_SKILL_RANK = {
-    [1]  = { [1]=9,  [2]=10, [3]=4,  [4]=1,  [5]=3,  [6]=2,  [7]=9,  [8]=3,  [9]=10, [10]=10, [11]=9,  [12]=9  }, -- WAR
-    [2]  = { [1]=0,  [2]=10, [3]=10, [4]=10, [5]=10, [6]=10, [7]=10, [8]=10, [9]=10, [10]=10, [11]=9,  [12]=4  }, -- MNK
-    [3]  = { [1]=9,  [2]=10, [3]=10, [4]=10, [5]=10, [6]=10, [7]=10, [8]=10, [9]=10, [10]=10, [11]=4,  [12]=3  }, -- WHM
-    [4]  = { [1]=10, [2]=10, [3]=10, [4]=10, [5]=10, [6]=10, [7]=10, [8]=10, [9]=10, [10]=10, [11]=9,  [12]=2  }, -- BLM
-    [5]  = { [1]=10, [2]=4,  [3]=4,  [4]=10, [5]=10, [6]=10, [7]=10, [8]=10, [9]=10, [10]=10, [11]=9,  [12]=4  }, -- RDM
-    [6]  = { [1]=9,  [2]=2,  [3]=6,  [4]=10, [5]=10, [6]=10, [7]=10, [8]=10, [9]=10, [10]=10, [11]=10, [12]=10 }, -- THF
-    [7]  = { [1]=10, [2]=4,  [3]=1,  [4]=9,  [5]=9,  [6]=10, [7]=10, [8]=9,  [9]=10, [10]=10, [11]=9,  [12]=10 }, -- PLD
-    [8]  = { [1]=9,  [2]=5,  [3]=5,  [4]=1,  [5]=9,  [6]=10, [7]=2,  [8]=10, [9]=10, [10]=10, [11]=10, [12]=10 }, -- DRK
-    [9]  = { [1]=6,  [2]=9,  [3]=9,  [4]=9,  [5]=5,  [6]=9,  [7]=9,  [8]=9,  [9]=10, [10]=10, [11]=9,  [12]=9  }, -- BST
-    [10] = { [1]=10, [2]=7,  [3]=5,  [4]=10, [5]=10, [6]=10, [7]=10, [8]=10, [9]=10, [10]=10, [11]=9,  [12]=9  }, -- BRD
-    [11] = { [1]=10, [2]=9,  [3]=9,  [4]=9,  [5]=4,  [6]=9,  [7]=9,  [8]=9,  [9]=10, [10]=10, [11]=9,  [12]=9  }, -- RNG
-    [12] = { [1]=10, [2]=9,  [3]=3,  [4]=9,  [5]=10, [6]=10, [7]=10, [8]=3,  [9]=2,  [10]=1,  [11]=10, [12]=9  }, -- SAM
-    [13] = { [1]=9,  [2]=3,  [3]=6,  [4]=10, [5]=10, [6]=10, [7]=10, [8]=10, [9]=2,  [10]=10, [11]=10, [12]=10 }, -- NIN
-    [14] = { [1]=10, [2]=9,  [3]=6,  [4]=9,  [5]=9,  [6]=10, [7]=9,  [8]=1,  [9]=10, [10]=10, [11]=10, [12]=9  }, -- DRG
-    [15] = { [1]=10, [2]=10, [3]=10, [4]=10, [5]=10, [6]=10, [7]=10, [8]=10, [9]=10, [10]=10, [11]=9,  [12]=5  }, -- SMN
-    [16] = { [1]=6,  [2]=6,  [3]=6,  [4]=10, [5]=10, [6]=10, [7]=10, [8]=10, [9]=10, [10]=10, [11]=9,  [12]=9  }, -- BLU
-    [17] = { [1]=10, [2]=3,  [3]=4,  [4]=10, [5]=10, [6]=10, [7]=10, [8]=10, [9]=10, [10]=10, [11]=9,  [12]=9  }, -- COR
-    [18] = { [1]=2,  [2]=10, [3]=10, [4]=10, [5]=10, [6]=10, [7]=10, [8]=10, [9]=10, [10]=10, [11]=10, [12]=9  }, -- PUP
-    [19] = { [1]=9,  [2]=2,  [3]=9,  [4]=10, [5]=10, [6]=10, [7]=10, [8]=10, [9]=10, [10]=10, [11]=9,  [12]=9  }, -- DNC
-    [20] = { [1]=9,  [2]=10, [3]=10, [4]=10, [5]=10, [6]=10, [7]=10, [8]=10, [9]=10, [10]=10, [11]=4,  [12]=3  }, -- SCH
-    [21] = { [1]=10, [2]=10, [3]=10, [4]=10, [5]=10, [6]=10, [7]=10, [8]=10, [9]=10, [10]=10, [11]=10, [12]=2  }, -- GEO
-    [22] = { [1]=9,  [2]=9,  [3]=4,  [4]=10, [5]=10, [6]=10, [7]=10, [8]=10, [9]=10, [10]=10, [11]=10, [12]=9  }, -- RUN
+    [1]  = { [6]=0, [5]=2, [4]=3, [7]=3, [12]=4, [3]=4, [11]=5, [2]=5, [8]=5, [1]=9, [25]=9, [26]=9, [27]=9, [30]=6, [29]=7, [31]=8 },  -- Warrior
+    [2]  = { [1]=0, [12]=4, [11]=6, [27]=10, [28]=2, [29]=3, [31]=10 },                                                                  -- Monk
+    [3]  = { [11]=3, [12]=6, [27]=10, [30]=9, [29]=10 },                                                                                  -- White Mage
+    [4]  = { [12]=5, [11]=6, [2]=9, [7]=10, [27]=9, [29]=10 },                                                                            -- Black Mage
+    [5]  = { [2]=4, [3]=4, [11]=9, [25]=9, [27]=11, [29]=9, [31]=10, [30]=11 },                                                           -- Red Mage
+    [6]  = { [2]=2, [3]=9, [11]=10, [1]=10, [26]=6, [25]=8, [27]=9, [29]=0, [31]=2, [30]=11 },                                            -- Thief
+    [7]  = { [3]=0, [11]=2, [12]=2, [4]=4, [2]=8, [8]=10, [30]=0, [29]=7, [31]=7 },                                                       -- Paladin
+    [8]  = { [7]=0, [4]=2, [5]=5, [6]=5, [3]=5, [2]=7, [11]=8, [26]=10, [29]=7, [31]=10 },                                                -- Dark Knight
+    [9]  = { [5]=2, [7]=5, [2]=6, [11]=9, [3]=10, [29]=7, [31]=7, [30]=10 },                                                              -- Beastmaster
+    [10] = { [2]=5, [12]=6, [3]=8, [11]=9, [27]=10, [29]=9, [31]=10 },                                                                    -- Bard
+    [11] = { [5]=5, [2]=5, [3]=9, [11]=10, [25]=2, [26]=2, [27]=8, [29]=10 },                                                             -- Ranger
+    [12] = { [10]=0, [8]=5, [3]=6, [11]=10, [2]=10, [25]=6, [27]=6, [31]=2, [29]=3 },                                                     -- Samurai
+    [13] = { [9]=0, [2]=6, [3]=7, [10]=8, [11]=10, [1]=10, [27]=0, [26]=7, [25]=10, [29]=2, [31]=2 },                                     -- Ninja
+    [14] = { [8]=0, [12]=5, [3]=8, [11]=10, [2]=10, [31]=7, [29]=8 },                                                                     -- Dragoon
+    [15] = { [12]=4, [11]=6, [2]=10, [29]=10 },                                                                                            -- Summoner
 }
 
 local JOB_MAGIC_SKILL_RANK = {
-    -- Allowlist of main-job magic skills + fallback rank if the engine
-    -- doesn't report one. The engine's reported rank (from packet/memory)
-    -- always takes precedence when present, so these fallback values just
-    -- need to be in the right ballpark for the cap math to make sense.
-    -- Pre-ToAU jobs only (HorizonXI is 75-cap era).
-    [3]  = { [32]=3,  [33]=0,  [34]=3,  [35]=5 },                            -- WHM: Div B+, Hea A+, Enh B+, Enf B-
-    [4]  = { [32]=10, [33]=7,  [34]=9,  [35]=5,  [36]=0,  [37]=3 },          -- BLM: Div E, Hea C, Enh D, Enf B-, Ele A+, Dark B+
-    [5]  = { [35]=0,  [34]=3,  [36]=6,  [33]=8,  [32]=10, [37]=10 },         -- RDM: Enf A+, Enh B+, Ele C+, Hea C-, Div E, Dark E
-    [7]  = { [32]=1,  [33]=4,  [34]=4,  [35]=9 },                            -- PLD: Div A, Hea B, Enh B, Enf D
-    [8]  = { [32]=10, [33]=9,  [34]=9,  [35]=6,  [36]=7,  [37]=4 },          -- DRK: Div E, Hea D, Enh D, Enf C+, Ele C, Dark B
-    [13] = { [33]=10, [34]=7,  [35]=7,  [36]=9,  [37]=9,  [39]=0 },          -- NIN: Hea E, Enh C, Enf C, Ele D, Dark D, Nin A+
-    [14] = { [33]=10 },                                                       -- DRG: Hea E
-    [15] = { [32]=7,  [33]=7,  [34]=7,  [35]=9,  [38]=0 },                   -- SMN: Div C, Hea C, Enh C, Enf D, Sum A+
+    -- Casting allowlist: only the magic schools each main job actively casts
+    -- spells in. DRK has E-rank Divine/Healing/Enhancing latent in memory
+    -- (from sub-job exposure), but doesn't cast them as main job, so they
+    -- aren't included here -- otherwise they'd show as noise in the overlay.
+    -- HorizonXI is 75-cap era; SCH/BLU/etc. omitted.
+    [3]  = { [33]=0, [32]=2, [34]=6, [35]=7 },           -- White Mage: Hea/Div/Enh/Enf
+    [4]  = { [36]=0, [37]=2, [35]=6, [34]=10 },          -- Black Mage: Ele/Dark/Enf/Enh
+    [5]  = { [35]=0, [34]=3, [36]=6, [33]=8, [37]=10, [32]=10 }, -- Red Mage: Enf/Enh/Ele/Hea/Dark/Div
+    [7]  = { [32]=3, [33]=7, [34]=9 },                   -- Paladin: Div/Hea/Enh
+    [8]  = { [37]=2, [36]=3, [35]=7 },                   -- Dark Knight: Dark/Ele/Enf
+    [13] = { [39]=2 },                                    -- Ninja: Ninjutsu
+    [15] = { [38]=2 },                                    -- Summoner: Summoning
 }
 
 local function rank_for_job_skill(job_id, skill_id)
@@ -292,6 +322,16 @@ end
 local function get_main_weapon_skill_id()
     local sids = get_equipped_weapon_skill_ids()
     return sids[1]
+end
+
+-- Is this sid currently equipped as a weapon? Used so prepare() can show
+-- a weapon you've sub-equipped even if your main job has no rank for it.
+local function is_equipped_weapon_sid(sid)
+    if not sid then return false end
+    for _, s in ipairs(get_equipped_weapon_skill_ids()) do
+        if s == sid then return true end
+    end
+    return false
 end
 
 -- Returns current value, rank index, and engine-reported cap for a combat
@@ -877,7 +917,7 @@ end
 -- isn't applicable (no rank for this job, already at cap and
 -- show_capped is off, etc.).
 ----------------------------------------------------------------
-local function prepare(sid, magic, job_id, mjl)
+local function prepare(sid, category, job_id, mjl)
     if not sid then return nil end
     local cur, rank, engine_cap = get_combat_skill(sid)
     if not cur then return nil end
@@ -890,20 +930,32 @@ local function prepare(sid, magic, job_id, mjl)
     end
     skill_int_seen[sid] = cur
 
-    -- For magic skills, restrict to main-job ranks only. The engine reports
-    -- ranks from sub-job too, which makes irrelevant rows (e.g. SMN/NIN on a
-    -- non-summoner/ninja main) show up. The main-job table acts as an
-    -- allowlist; the engine's rank/cap (when present) are authoritative
-    -- because they reflect this server's actual ranking, which can differ
-    -- from retail canonical.
-    if magic then
-        local fallback_rank = rank_for_job_magic_skill(job_id, sid)
+    -- Per-category eligibility:
+    --   combat/defense: must be in JOB_SKILL_RANK[job] (main-job allowlist)
+    --                   OR equipped (e.g. a weapon you can use via sub-job).
+    --   magic:          must be in JOB_MAGIC_SKILL_RANK[job] (cast allowlist).
+    --   craft:          no rank tables exist; show only when trained
+    --                   (cur>0 OR frac>0) and rely on the engine cap.
+    local fallback_rank
+    if category == 'magic' then
+        fallback_rank = rank_for_job_magic_skill(job_id, sid)
         if not fallback_rank then return nil end
-        if not rank then rank = fallback_rank end
-    elseif not rank then
-        rank = rank_for_job_skill(job_id, sid)
+    elseif category == 'craft' then
+        if cur <= 0 and frac_get(sid) <= 0 then return nil end
+        -- rank stays nil for crafts; cap comes from engine.
+    else
+        -- combat or defense
+        fallback_rank = rank_for_job_skill(job_id, sid)
+        if not fallback_rank then
+            -- Allow equipped combat weapons even if the job has no rank.
+            if category == 'combat' and is_equipped_weapon_sid(sid) then
+                -- leave rank nil; cap from engine if available
+            else
+                return nil
+            end
+        end
     end
-    if not rank then return nil end
+    if not rank then rank = fallback_rank end
 
     -- Prefer the engine-reported cap when it's a sane positive value -- it
     -- matches what FFXI shows in /checkparam and avoids drift from our
@@ -925,15 +977,19 @@ local function prepare(sid, magic, job_id, mjl)
     local eff_lvl = effective_level_for(rank, cur)
     local eff_str = eff_lvl and (' L%d'):format(eff_lvl) or ''
 
+    -- Defense and craft don't have meaningful "what mob can give skillups"
+    -- math, so suppress those hints — they apply to combat/magic only.
     local is_cast_gated = SKILL_IS_CAST_GATED[sid] == true
     local min_mob_lvl   = nil
-    if not is_cast_gated and cap and cur < cap then
+    if (category == 'combat' or category == 'magic')
+       and not is_cast_gated and cap and cur < cap then
         min_mob_lvl = min_mob_level_for(rank, cur)
     end
 
     local pct = (cap and cap > 0) and math.max(0, math.min(1, cur_eff / cap)) or 0
     return {
         sid           = sid,
+        category      = category,
         rank          = rank,
         cur           = cur_eff,
         pct           = pct,
@@ -986,24 +1042,33 @@ local function draw_frame()
     local job_id = pl:GetMainJob()
 
     local items = T{}
-    local seen_combat = T{}
-    for _, wsid in ipairs(get_equipped_weapon_skill_ids()) do
-        if not seen_combat[wsid] and not is_skill_hidden(wsid) then
-            seen_combat[wsid] = true
-            local w_item = prepare(wsid, false, job_id, mjl)
-            if w_item then items:append(w_item) end
+    local seen  = T{}
+    local equipped = T{}
+    for _, wsid in ipairs(get_equipped_weapon_skill_ids()) do equipped[wsid] = true end
+
+    local function add_category(cat, sids)
+        for _, sid in ipairs(sids) do
+            if not seen[sid] and not is_skill_hidden(sid) then
+                seen[sid] = true
+                local it = prepare(sid, cat, job_id, mjl)
+                if it then
+                    it.equipped = equipped[sid] == true
+                    items:append(it)
+                end
+            end
         end
     end
-    for _, mid in ipairs(MAGIC_SKILL_IDS) do
-        if not is_skill_hidden(mid) then
-            local it = prepare(mid, true, job_id, mjl)
-            if it then items:append(it) end
-        end
-    end
+
+    if config.show_combat  then add_category('combat',  SKILL_CATEGORIES.combat)  end
+    if config.show_defense then add_category('defense', SKILL_CATEGORIES.defense) end
+    if config.show_magic   then add_category('magic',   SKILL_CATEGORIES.magic)   end
+    if config.show_craft   then add_category('craft',   SKILL_CATEGORIES.craft)   end
 
     local mode = config.display_mode
 
-    -- Optional sort. Tie-break by SID for stable frame-to-frame order.
+    -- Default sort: equipped first, then by category order (combat→defense→
+    -- magic→craft), then by sid within category. User sort modes override.
+    local CAT_ORDER = { combat = 1, defense = 2, magic = 3, craft = 4 }
     local sm = config.sort_mode
     if sm == 'grade' then
         table.sort(items, function(a, b)
@@ -1021,6 +1086,14 @@ local function draw_frame()
         table.sort(items, function(a, b)
             local pa, pb = a.pct or 0, b.pct or 0
             if pa ~= pb then return pa > pb end
+            return (a.sid or 0) < (b.sid or 0)
+        end)
+    else
+        table.sort(items, function(a, b)
+            if a.equipped ~= b.equipped then return a.equipped end
+            local ca = CAT_ORDER[a.category] or 9
+            local cb = CAT_ORDER[b.category] or 9
+            if ca ~= cb then return ca < cb end
             return (a.sid or 0) < (b.sid or 0)
         end)
     end
@@ -1189,6 +1262,21 @@ local function draw_settings()
         end
 
         imgui.Separator()
+        imgui.Text('Show categories')
+        local function cat_check(label, key)
+            local r = { config[key] }
+            if imgui.Checkbox(label .. '##sp_cat_' .. key, r) then
+                config[key] = r[1]; save()
+            end
+        end
+        cat_check('Combat',  'show_combat');  imgui.SameLine()
+        cat_check('Defense', 'show_defense'); imgui.SameLine()
+        cat_check('Magic',   'show_magic');   imgui.SameLine()
+        cat_check('Craft',   'show_craft')
+        imgui.TextDisabled('Magic and combat are filtered by your main job.')
+        imgui.TextDisabled('Defense shows only blocks your job has access to. Craft shows only skills you have trained.')
+
+        imgui.Separator()
         local c_ref = { config.show_capped }
         if imgui.Checkbox('Show capped skills', c_ref) then
             config.show_capped = c_ref[1]; save()
@@ -1279,7 +1367,8 @@ end)
 local function _cap_for_sid(sid)
     -- Prefer the engine's reported cap (covers defensive 28-31 and crafting
     -- 48+ which have no static rank tables; also covers HorizonXI rank
-    -- divergence from retail). Static rank+CAP_REF math is the fallback.
+    -- divergence from retail). Static rank+CAP_REF math is the fallback
+    -- for skills the engine doesn't expose a cap for.
     local _, _, engine_cap = get_combat_skill(sid)
     if engine_cap and engine_cap > 0 then return engine_cap end
     local pl = AshitaCore:GetMemoryManager():GetPlayer()
@@ -1527,6 +1616,57 @@ ashita.events.register('command', 'sp_command', function(e)
             cm:AddChatMessage(1, false, header .. body)
         end
         say('colortest: dumped ' .. tostring(#CHAT_PALETTE) .. ' palette codes')
+    elseif sub == 'diag' then
+        -- Diagnostic: for every defined SKILL_NAMES sid, dump engine vs.
+        -- table values so we can spot where cap math is going wrong. Use
+        -- when a skill displays the wrong cap or rank letter.
+        local pl = AshitaCore:GetMemoryManager():GetPlayer()
+        if not pl then say('diag: no player'); return end
+        local job_id = pl:GetMainJob()
+        local mjl    = pl:GetMainJobLevel()
+        say(('diag: job=%d mjl=%d'):format(job_id, mjl))
+        local sids = {}
+        for sid, _ in pairs(SKILL_NAMES) do sids[#sids+1] = sid end
+        table.sort(sids)
+        for _, sid in ipairs(sids) do
+            local cur, rank, ecap = get_combat_skill(sid)
+            if cur and (cur > 0 or ecap and ecap > 0) then
+                local tbl_rank = rank_for_job_skill(job_id, sid)
+                              or rank_for_job_magic_skill(job_id, sid)
+                local tbl_cap  = tbl_rank and skill_cap_for(tbl_rank, mjl) or nil
+                say(('  %-12s sid=%2d  cur=%-4s  eng:rank=%-4s cap=%-4s  tbl:rank=%-4s cap=%-4s'):format(
+                    SKILL_NAMES[sid] or '?',
+                    sid,
+                    tostring(cur),
+                    tostring(rank or '-'),
+                    tostring(ecap or '-'),
+                    tostring(tbl_rank or '-'),
+                    tostring(tbl_cap or '-')
+                ))
+            end
+        end
+    elseif sub == 'category' or sub == 'cat' then
+        -- /prism category combat|defense|magic|craft [on|off|toggle]
+        local which = (args[3] or ''):lower()
+        local key
+        if which == 'combat'  then key = 'show_combat'
+        elseif which == 'defense' or which == 'def' then key = 'show_defense'
+        elseif which == 'magic'   or which == 'mag' then key = 'show_magic'
+        elseif which == 'craft'   or which == 'crafts' then key = 'show_craft'
+        end
+        if not key then
+            say('usage: /prism category combat|defense|magic|craft [on|off|toggle]')
+            say(('  combat=%s defense=%s magic=%s craft=%s'):format(
+                tostring(config.show_combat), tostring(config.show_defense),
+                tostring(config.show_magic),  tostring(config.show_craft)))
+        else
+            local v = (args[4] or 'toggle'):lower()
+            if v == 'on' then config[key] = true
+            elseif v == 'off' then config[key] = false
+            else config[key] = not config[key] end
+            save()
+            say(key .. ' ' .. (config[key] and 'ON' or 'OFF'))
+        end
     elseif sub == 'show' or sub == 'hide' then
         -- /prism show <name>  /prism hide <name>  -- toggle per-skill visibility by name match
         local target = (args[3] or ''):lower()
@@ -1561,6 +1701,8 @@ ashita.events.register('command', 'sp_command', function(e)
         say('  /prism chat on|off|toggle         -- enhanced chat skillup messages')
         say('  /prism chattest                   -- emit 2 sample chat lines (diagnostic)')
         say('  /prism colortest                  -- preview every palette swatch (calibration)')
+        say('  /prism diag                       -- dump engine vs. table caps per skill')
+        say('  /prism category <name> [on|off]   -- toggle combat|defense|magic|craft category')
         say('  /prism show <name>                -- show a specific skill (e.g. Elemental)')
         say('  /prism hide <name>                -- hide a specific skill')
         say('  /prism reset                      -- reset window position')
