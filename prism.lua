@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.4.2'
+addon.version = '0.4.3'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat & magic skill progress with effective level and min mob hints.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -1356,14 +1356,22 @@ ashita.events.register('command', 'sp_command', function(e)
         save()
         say('chat_skillups ' .. (config.chat_skillups and 'ON' or 'OFF'))
     elseif sub == 'chattest' then
-        -- Diagnostic: emit a sample skillup line regardless of chat_skillups
-        -- setting. Use sword (sid=3) so the format renders cleanly.
+        -- Diagnostic: emit sample lines + isolate which path is failing.
         local was = config.chat_skillups
         config.chat_skillups = true
-        emit_skillup_chat(3, 'frac', 3)
-        emit_skillup_chat(3, 'tick', 96)
+        say('chattest step 1: plain say() works (you see this)')
+        local ok1, err1 = pcall(emit_skillup_chat, 3, 'frac', 3)
+        if not ok1 then say('chattest step 2 ERROR (frac emit): ' .. tostring(err1)) end
+        local ok2, err2 = pcall(emit_skillup_chat, 3, 'tick', 96)
+        if not ok2 then say('chattest step 3 ERROR (tick emit): ' .. tostring(err2)) end
+        -- Raw plain-text emit (no chat.color1 chain) to test if the issue is the color codes:
+        print(chat.header(addon.name):append(chat.message('chattest step 4 plain: Your Sword skill rises 0.3 points (95.4 / 100)')))
+        -- Direct AddChatMessage path (bypasses print/text_in entirely):
+        if AshitaCore and AshitaCore.GetChatManager then
+            AshitaCore:GetChatManager():AddChatMessage(106, false, '[prism] chattest step 5 AddChatMessage: Your Sword skill rises 0.3 points')
+        end
         config.chat_skillups = was
-        say('chattest: emitted 2 sample lines (chat_skillups state preserved)')
+        say('chattest done (emit ok1=' .. tostring(ok1) .. ' ok2=' .. tostring(ok2) .. ')')
     elseif sub == 'show' or sub == 'hide' then
         -- /prism show <name>  /prism hide <name>  -- toggle per-skill visibility by name match
         local target = (args[3] or ''):lower()
