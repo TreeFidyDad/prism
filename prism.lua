@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.7.8'
+addon.version = '0.7.9'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat, defense, magic & craft skill progress per main job.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -1563,7 +1563,7 @@ local function draw_settings()
     imgui.PushStyleColor(ImGuiCol_Separator,       { 0.25, 0.30, 0.38, 0.55 })
     imgui.PushStyleColor(ImGuiCol_Text,            { 0.92, 0.95, 0.98, 1.00 })
 
-    if imgui.Begin('Prism settings##pr_set', settings_open) then
+    if imgui.Begin('Prism settings##pr_set', settings_open, ImGuiWindowFlags_NoCollapse) then
         -- Ashita's imgui.Checkbox binding expects a {bool} ref table, not a
         -- raw bool. Same shape as the settings_open `{ false }` we pass to
         -- Begin. The returned `changed` is true on the frame the user
