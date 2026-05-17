@@ -1,0 +1,11 @@
+﻿# Settings live in Ashita's config/addons/prism directory, never here
+settings.lua
+data/
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
