@@ -39,6 +39,7 @@ Skill capture adapted from [Jull256/skilluptracker](https://github.com/Jull256/s
 /prism perrow 1..24                 -- items per row
 /prism capped                       -- toggle showing capped skills
 /prism persistfrac on|off|toggle    -- persist fractional skill progress across /logout
+/prism chat on|off|toggle           -- enhanced chat skillup messages (off by default)
 /prism show <name>                  -- show a specific skill (e.g. Elemental)
 /prism hide <name>                  -- hide a specific skill
 /prism reset                        -- reset window position
@@ -55,11 +56,12 @@ Open with `/prism` or `/pr`. All options persist to Ashita's per-character confi
 - **Magic skills are gated by your main job's rank table** — sub-job magic skills are hidden by design (their caps are halved anyway).
 - **Fractional skill (e.g. 9.1) only flows via chat/packet** — the game's memory only exposes integers. Prism saves your fractional progress to Ashita's per-character config (toggle in settings or `/prism persistfrac off`), so a `/logout` doesn't throw away the 0.1–0.9 you already earned.
 - Skill caps use rank slopes calibrated against low-level (`L≤9`) reference points; some piecewise interpolation remains.
+- **Enhanced chat skillup messages** are *off by default* (toggle in settings or `/prism chat on`). When enabled, Prism replaces the game's default `Your X skill rises 1 point` line with a colored version showing the fractional total and cap, e.g. `Your sword skill rises 0.3 points (95.4 / 100)`. If you also run [skilluptracker](https://github.com/Jull256/skilluptracker), keep one or the other enabled — not both — to avoid double-printed lines.
 
 ## Acknowledgments
 
 - **Nerf (nerfonline)** from the Ashita Discord shared the [FFXI Skill Calculator spreadsheet](https://docs.google.com/spreadsheets/d/1VE4as2FWwrD4e_lJ4h1wG6Ga50PAJGzGaWkOGOx0mvE/edit) covering canonical L1–75 skill caps and per-job rank assignments for both Horizon and Retail. Full integration of that data into Prism's cap and rank tables is planned for an upcoming release. Thanks, Nerf.
-- Skillup capture pattern (packet `0x29` MessageNum 38/53) adapted from [Jull256/skilluptracker](https://github.com/Jull256/skilluptracker) (Mujihina).
+- Skillup capture pattern (packet `0x29` MessageNum 38/53) and enhanced chat skillup message format adapted from [Jull256/skilluptracker](https://github.com/Jull256/skilluptracker) (Mujihina original).
 
 ## License
 

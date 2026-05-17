@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.1'
+addon.version   = '0.4.0'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat & magic skill progress with effective level and min mob hints.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -23,6 +23,7 @@ local default_config = T{
     sort_mode    = 'default',-- 'default' | 'grade' | 'lowest' | 'progress'
     show_capped  = false,    -- hide skills that are already at cap for current level
     persist_frac = true,     -- save fractional skill progress to disk; survives /logout
+    chat_skillups = false,   -- enhanced chat line on skillup: "Your X rises 0.3 points (95.4 / 100)"
     -- Per-skill visibility, keyed by SID (string keys for stable serialization).
     -- nil/missing => visible by default.
     skills_hidden = T{},
@@ -54,6 +55,7 @@ local function normalize_config()
     if type(config.skills_hidden) ~= 'table' then config.skills_hidden = T{} end
     if type(config.persist_frac) ~= 'boolean' then config.persist_frac = true end
     if type(config.skill_frac) ~= 'table' then config.skill_frac = T{} end
+    if type(config.chat_skillups) ~= 'boolean' then config.chat_skillups = false end
 end
 normalize_config()
 
@@ -1113,6 +1115,10 @@ local function draw_settings()
             end
             save()
         end
+        local cs_ref = { config.chat_skillups }
+        if imgui.Checkbox('Enhanced chat skillup messages', cs_ref) then
+            config.chat_skillups = cs_ref[1]; save()
+        end
 
         imgui.Separator()
         imgui.Text('Skills to show')
@@ -1150,6 +1156,65 @@ ashita.events.register('d3d_present', 'sp_present', function()
 end)
 
 ----------------------------------------------------------------
+-- chat skillup messages (opt-in via config.chat_skillups). Format
+-- adapted from Jull256/skilluptracker (Mujihina original). Default
+-- OFF so we don't double-print for users running skilluptracker too.
+----------------------------------------------------------------
+local function _cap_for_sid(sid)
+    local pl = AshitaCore:GetMemoryManager():GetPlayer()
+    if not pl then return nil end
+    local job_id = pl:GetMainJob()
+    local mjl    = pl:GetMainJobLevel()
+    local rank
+    if sid >= 32 and sid <= 39 then
+        rank = rank_for_job_magic_skill(job_id, sid)
+    else
+        rank = rank_for_job_skill(job_id, sid)
+    end
+    if not rank then return nil end
+    return skill_cap_for(rank, mjl)
+end
+
+-- Read current integer skill from memory. Combat skills 1..47.
+local function _cur_int_for_sid(sid)
+    local ok, v = pcall(function()
+        local pl = AshitaCore:GetMemoryManager():GetPlayer()
+        local sk = pl and pl:GetCombatSkill(sid)
+        return sk and sk:GetSkill() or 0
+    end)
+    return ok and v or 0
+end
+
+-- Emit one enhanced skillup line. kind='frac' (delta in tenths 1..9)
+-- or kind='tick' (new integer value). Silent if chat_skillups is off.
+local function emit_skillup_chat(sid, kind, value)
+    if not config.chat_skillups then return end
+    local name = SKILL_NAMES[sid] or ('Skill#' .. sid)
+    local cap  = _cap_for_sid(sid)
+    local cap_str = cap and tostring(cap) or '?'
+    if kind == 'frac' then
+        local cur_eff = _cur_int_for_sid(sid) + math.min(0.9, frac_get(sid))
+        local capped  = cap and cur_eff >= cap
+        local cur_str = ('%.1f / %s'):format(cur_eff, cap_str)
+        print(chat.header(addon.name)
+            :append(chat.message('Your '))
+            :append(chat.color1(106, name))
+            :append(chat.message(' skill rises '))
+            :append(chat.color1(106, ('0.%d points'):format(value)))
+            :append(chat.message(' ('))
+            :append(chat.color1(capped and 8 or 106, cur_str))
+            :append(chat.message(')')))
+    elseif kind == 'tick' then
+        local capped = cap and value >= cap
+        print(chat.header(addon.name)
+            :append(chat.message('Your '))
+            :append(chat.color1(106, name))
+            :append(chat.message(' skill reaches level '))
+            :append(chat.color1(capped and 8 or 106, ('%d / %s'):format(value, cap_str))))
+    end
+end
+
+----------------------------------------------------------------
 -- packet_in: authoritative skillup capture (0x29 MessageNum 38/53).
 -- Adapted from Jull256/skilluptracker (Mujihina original).
 --   msgnum 38: fractional skillup. Data=skillID, Data2=delta in tenths.
@@ -1165,12 +1230,21 @@ ashita.events.register('packet_in', 'sp_packet_cb', function(e)
         if sid and tenths and sid > 0 and sid < 48 then
             frac_add(sid, (tenths or 0) / 10)
             _skillup_pkt_at[sid] = os.clock()
+            if config.chat_skillups then
+                emit_skillup_chat(sid, 'frac', tenths)
+                e.blocked = true
+            end
         end
     elseif msgnum == 53 then
-        local sid = struct.unpack('L', e.data, 0x0C + 0x01)
+        local sid    = struct.unpack('L', e.data, 0x0C + 0x01)
+        local newint = struct.unpack('L', e.data, 0x10 + 0x01)
         if sid and sid > 0 and sid < 48 then
             frac_reset(sid)
             _skillup_pkt_at[sid] = os.clock()
+            if config.chat_skillups then
+                emit_skillup_chat(sid, 'tick', newint or 0)
+                e.blocked = true
+            end
         end
     end
 end)
@@ -1184,13 +1258,28 @@ end)
 ashita.events.register('text_in', 'sp_text_in', function(e)
     local s = e and e.message or ''
     if s == '' then return end
+    -- Fractional capture (fallback if packet_in didn't fire). Dedupes via _skillup_pkt_at.
     local name, frac = s:match('([%a%-]+[%a%- ]*)%s*skill rises[%s%a]*0%.(%d)')
-    if not name or not frac then return end
-    local sid = CHAT_SKILL_NAMES[name:lower():gsub('^your%s+',''):gsub('%s+$','')]
-    if not sid then return end
-    if _skillup_pkt_at[sid] and (os.clock() - _skillup_pkt_at[sid]) < 1.5 then return end
-    local delta = tonumber('0.' .. frac) or 0
-    frac_add(sid, delta)
+    if name and frac then
+        local sid = CHAT_SKILL_NAMES[name:lower():gsub('^your%s+',''):gsub('%s+$','')]
+        if sid then
+            local fresh_pkt = _skillup_pkt_at[sid] and (os.clock() - _skillup_pkt_at[sid]) < 1.5
+            if not fresh_pkt then
+                local delta = tonumber('0.' .. frac) or 0
+                frac_add(sid, delta)
+                -- packet_in didn't beat us to it; emit the enhanced line ourselves.
+                if config.chat_skillups then
+                    emit_skillup_chat(sid, 'frac', tonumber(frac) or 0)
+                end
+            end
+        end
+    end
+    -- When chat_skillups is on, suppress the game's default "skill rises / reaches"
+    -- chat line so users see only the enhanced version. Same blocking pattern as
+    -- skilluptracker uses to avoid double-printing.
+    if config.chat_skillups and (s:match('skill rises') or s:match('skill reaches')) then
+        e.blocked = true
+    end
 end)
 
 ----------------------------------------------------------------
@@ -1248,6 +1337,17 @@ ashita.events.register('command', 'sp_command', function(e)
         end
         save()
         say('persist_frac ' .. (config.persist_frac and 'ON' or 'OFF'))
+    elseif sub == 'chat' or sub == 'chatskillups' then
+        local arg = (args[3] or 'toggle'):lower()
+        if arg == 'on' then
+            config.chat_skillups = true
+        elseif arg == 'off' then
+            config.chat_skillups = false
+        else
+            config.chat_skillups = not config.chat_skillups
+        end
+        save()
+        say('chat_skillups ' .. (config.chat_skillups and 'ON' or 'OFF'))
     elseif sub == 'show' or sub == 'hide' then
         -- /prism show <name>  /prism hide <name>  -- toggle per-skill visibility by name match
         local target = (args[3] or ''):lower()
@@ -1279,6 +1379,7 @@ ashita.events.register('command', 'sp_command', function(e)
         say('  /prism perrow 1..24               -- items per row')
         say('  /prism capped                     -- toggle showing capped skills')
         say('  /prism persistfrac on|off|toggle  -- persist fractional skill progress')
+        say('  /prism chat on|off|toggle         -- enhanced chat skillup messages')
         say('  /prism show <name>                -- show a specific skill (e.g. Elemental)')
         say('  /prism hide <name>                -- hide a specific skill')
         say('  /prism reset                      -- reset window position')
