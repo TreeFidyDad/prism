@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.4.0'
+addon.version   = '0.4.1'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat & magic skill progress with effective level and min mob hints.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -1222,8 +1222,12 @@ end
 ----------------------------------------------------------------
 ashita.events.register('packet_in', 'sp_packet_cb', function(e)
     if e.id ~= 0x0029 then return end
-    local ok, msgnum = pcall(struct.unpack, 'H', e.data, 0x18 + 0x01)
-    if not ok or not msgnum then return end
+    local ok, raw_msgnum = pcall(struct.unpack, 'H', e.data, 0x18 + 0x01)
+    if not ok or not raw_msgnum then return end
+    -- Bit 15 is a flag (battle-message marker); the actual MessageNum is the
+    -- lower 15 bits. simplelog masks with %2^15 for the same reason. Without
+    -- this mask, msgnum reads as 32806 instead of 38 when the flag is set.
+    local msgnum = raw_msgnum % 32768
     if msgnum == 38 then
         local sid    = struct.unpack('L', e.data, 0x0C + 0x01)
         local tenths = struct.unpack('L', e.data, 0x10 + 0x01)
@@ -1348,6 +1352,15 @@ ashita.events.register('command', 'sp_command', function(e)
         end
         save()
         say('chat_skillups ' .. (config.chat_skillups and 'ON' or 'OFF'))
+    elseif sub == 'chattest' then
+        -- Diagnostic: emit a sample skillup line regardless of chat_skillups
+        -- setting. Use sword (sid=3) so the format renders cleanly.
+        local was = config.chat_skillups
+        config.chat_skillups = true
+        emit_skillup_chat(3, 'frac', 3)
+        emit_skillup_chat(3, 'tick', 96)
+        config.chat_skillups = was
+        say('chattest: emitted 2 sample lines (chat_skillups state preserved)')
     elseif sub == 'show' or sub == 'hide' then
         -- /prism show <name>  /prism hide <name>  -- toggle per-skill visibility by name match
         local target = (args[3] or ''):lower()
@@ -1380,6 +1393,7 @@ ashita.events.register('command', 'sp_command', function(e)
         say('  /prism capped                     -- toggle showing capped skills')
         say('  /prism persistfrac on|off|toggle  -- persist fractional skill progress')
         say('  /prism chat on|off|toggle         -- enhanced chat skillup messages')
+        say('  /prism chattest                   -- emit 2 sample chat lines (diagnostic)')
         say('  /prism show <name>                -- show a specific skill (e.g. Elemental)')
         say('  /prism hide <name>                -- hide a specific skill')
         say('  /prism reset                      -- reset window position')
