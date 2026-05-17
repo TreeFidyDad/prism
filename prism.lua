@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.7.5'
+addon.version = '0.7.6'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat, defense, magic & craft skill progress per main job.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -171,6 +171,20 @@ local SKILL_CATEGORY = {}
 for cat, sids in pairs(SKILL_CATEGORIES) do
     for _, sid in ipairs(sids) do SKILL_CATEGORY[sid] = cat end
 end
+
+-- Crafts live in a separate IPlayer:GetCraftSkill(idx) array (idx 0..8),
+-- not in GetCombatSkill. Map our sid space (48..56) to that array.
+local CRAFT_SID_TO_IDX = {
+    [48] = 0,  -- Fishing
+    [49] = 1,  -- Woodworking
+    [50] = 2,  -- Smithing
+    [51] = 3,  -- Goldsmithing
+    [52] = 4,  -- Clothcraft
+    [53] = 5,  -- Leathercraft
+    [54] = 6,  -- Bonecraft
+    [55] = 7,  -- Alchemy
+    [56] = 8,  -- Cooking
+}
 
 -- Job-id -> 3-letter abbreviation, for settings-panel labels.
 local JOB_ABBR = {
@@ -384,6 +398,40 @@ local function get_combat_skill(sid)
     end)
     if ok then return cur, rank, cap end
     return nil, nil, nil
+end
+
+-- Returns current value, guild-rank index (0=Amateur..9=Veteran), and a
+-- derived cap for a craft skill. Crafts use IPlayer:GetCraftSkill(idx) --
+-- a different memory array from combat skills. The craft struct exposes
+-- GetSkill / GetRank / IsCapped (no GetCap), so we derive the cap from
+-- guild rank: each rank adds 10 to the ceiling (Amateur=10, Recruit=20,
+-- ... Veteran=100). Key items can push beyond 100 by +5/+10 per craft;
+-- we surface that by trusting IsCapped and clamping cap up to cur if
+-- the engine flags us as capped but cur exceeds the rank ceiling.
+-- Returns rank as nil downstream (combat-style A+/B-/etc. ranks don't
+-- apply to crafts), so the renderer just shows the craft name + numbers.
+local function get_craft_skill(sid)
+    local idx = CRAFT_SID_TO_IDX[sid]
+    if not idx then return nil, nil, nil end
+    local ok, cur, grank, capped = pcall(function()
+        local pl = AshitaCore:GetMemoryManager():GetPlayer()
+        local s = pl:GetCraftSkill(idx)
+        if not s then return nil, nil, nil end
+        local raw_cur    = (type(s.GetSkill)  == 'function') and s:GetSkill()  or s.Skill
+        local raw_rank   = (type(s.GetRank)   == 'function') and s:GetRank()   or s.Rank
+        local raw_capped = (type(s.IsCapped)  == 'function') and s:IsCapped()  or s.Capped
+        return raw_cur, raw_rank, raw_capped
+    end)
+    if not ok or not cur then return nil, nil, nil end
+    local cap = nil
+    if grank and grank >= 0 then
+        cap = (grank + 1) * 10
+        if cur > cap then cap = cur end           -- key-item raised ceiling
+        if capped == true and cur > 0 then        -- engine confirms cap-hit
+            cap = math.max(cap, cur)
+        end
+    end
+    return cur, nil, cap
 end
 
 -- Fractional skill accumulator: filled by packet 0x29 (authoritative,
@@ -989,7 +1037,12 @@ end
 ----------------------------------------------------------------
 local function prepare(sid, category, job_id, mjl)
     if not sid then return nil end
-    local cur, rank, engine_cap = get_combat_skill(sid)
+    local cur, rank, engine_cap
+    if category == 'craft' then
+        cur, rank, engine_cap = get_craft_skill(sid)
+    else
+        cur, rank, engine_cap = get_combat_skill(sid)
+    end
     if not cur then return nil end
 
     -- Detect integer-tick rises for the burst halo + reset fractional.
