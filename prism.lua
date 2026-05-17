@@ -1376,7 +1376,7 @@ local function draw_settings()
         local sp_job_name = (sp_job and JOB_ABBR and JOB_ABBR[sp_job]) or ('Job#' .. tostring(sp_job or '?'))
         imgui.Text('Skills to show')
         imgui.SameLine()
-        imgui.TextDisabled('(' .. sp_job_name .. ' — saved per job)')
+        imgui.TextDisabled('(' .. sp_job_name .. ' -- saved per job)')
 
         local function skill_check(sid, label)
             local hidden = is_skill_hidden(sid, sp_job)

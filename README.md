@@ -16,9 +16,13 @@ Tier color encodes rank: **A+ gold**, **B green**, **C cyan**, **D blue**, **E/F
 
 Prism groups every skill your main job can train into four toggleable categories. Equipped weapons sort first, then combat → defense → magic → craft.
 
-<!-- TODO(snippet): screenshot of the full overlay on DRK showing combat + defense + magic categories side by side, equipped GAxe + Scythe first -->
-<!-- TODO(snippet): screenshot of /prism settings panel with the new "Show categories" row (Combat / Defense / Magic / Craft checkboxes) visible -->
-<!-- TODO(snippet): chat screenshot of /prism diag output on DRK showing engine cap vs. table cap per skill -->
+![Prism overlay on RDM — all four categories](assets/overlay-rdm.png)
+
+### `/prism diag` — calibration view
+
+HorizonXI's engine returns nil/0 for `GetCap()` on every skill, so Prism's HX-calibrated static tables do all the work. `/prism diag` prints both side by side per skill — the `eng:` column shows what the engine reports, `tbl:` shows what Prism's tables produce:
+
+![Prism diag output](assets/diag-rdm.png)
 
 | Category | What's shown | Filter |
 |---|---|---|
@@ -63,7 +67,6 @@ Skill capture adapted from [Jull256/skilluptracker](https://github.com/Jull256/s
 /prism chat on|off|toggle           -- enhanced chat skillup messages (off by default)
 /prism diag                         -- dump engine cap vs. table cap per skill (calibration)
 /prism colortest                    -- preview every chat-skillup palette swatch
-/prism show <name>                  -- show a specific skill (e.g. Elemental)
 /prism hide <name>                  -- hide a specific skill on the current job (per-job)
 /prism show <name>                  -- un-hide a specific skill on the current job
 /prism reset                        -- reset window position
@@ -71,11 +74,9 @@ Skill capture adapted from [Jull256/skilluptracker](https://github.com/Jull256/s
 
 ## Settings panel
 
-![Prism settings](assets/settings.png)
+![Prism settings — per-job skill list (RDM shown)](assets/settings-rdm.png)
 
-<!-- TODO(snippet): replace settings.png with a fresh capture that includes the "Show categories" row -->
-
-Open with `/prism` or `/pr`. All options persist to Ashita's per-character config.
+Open with `/prism` or `/pr`. All options persist to Ashita's per-character config — and "Skills to show" is **saved per job**, so each character's RDM, DRK, RNG, etc. keep their own visibility selections.
 
 ## Notes
 
