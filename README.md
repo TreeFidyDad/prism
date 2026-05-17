@@ -1,6 +1,6 @@
 # Prism
 
-A floating skill overlay for **HorizonXI** (Ashita v4). Tracks your combat and magic skills with tier-colored crystals, donuts, or pills — plus effective level and minimum mob level hints so you know what to hunt next.
+A floating skill overlay for **FFXI** (Ashita v4). Tracks your combat and magic skills with tier-colored crystals, donuts, or pills — plus effective level and minimum mob level hints so you know what to hunt next.
 
 ![Prism](assets/prism.png)
 
@@ -39,7 +39,7 @@ Skill capture adapted from [Jull256/skilluptracker](https://github.com/Jull256/s
 
 - **Magic skills are gated by your main job's rank table** — sub-job magic skills are hidden by design (their caps are halved anyway).
 - **Fractional skill (e.g. 9.1) only flows via chat/packet** — the game's memory only exposes integers. If you log in mid-skillup, you'll see the integer until the next tick rolls in.
-- Skill caps use Horizon XI rank slopes with calibrated low-level (`L≤9`) reference points; some piecewise interpolation remains.
+- Skill caps use rank slopes calibrated against low-level (`L≤9`) reference points; some piecewise interpolation remains.
 
 ## License
 
