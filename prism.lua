@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.0'
+addon.version   = '0.3.1'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat & magic skill progress with effective level and min mob hints.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -22,9 +22,14 @@ local default_config = T{
     scale        = 1.0,      -- 0.6..2.0 visual scale multiplier
     sort_mode    = 'default',-- 'default' | 'grade' | 'lowest' | 'progress'
     show_capped  = false,    -- hide skills that are already at cap for current level
+    persist_frac = true,     -- save fractional skill progress to disk; survives /logout
     -- Per-skill visibility, keyed by SID (string keys for stable serialization).
     -- nil/missing => visible by default.
     skills_hidden = T{},
+    -- Persisted fractional skill progress (sid -> 0.0..0.9). Filled by packet
+    -- 0x29 / chat capture, reset on integer tick. Persisted so a /logout in
+    -- the middle of grinding doesn't throw away the 0.1-0.9 you already earned.
+    skill_frac   = T{},
 }
 local config = settings.load(default_config)
 -- normalize legacy/invalid values so a hand-edit can't wedge the overlay
@@ -47,6 +52,8 @@ local function normalize_config()
     if type(config.x) ~= 'number' then config.x = 20 end
     if type(config.y) ~= 'number' then config.y = 320 end
     if type(config.skills_hidden) ~= 'table' then config.skills_hidden = T{} end
+    if type(config.persist_frac) ~= 'boolean' then config.persist_frac = true end
+    if type(config.skill_frac) ~= 'table' then config.skill_frac = T{} end
 end
 normalize_config()
 
@@ -236,7 +243,52 @@ end
 -- MessageNum 38=tenths delta, 53=integer tick) AND text_in (chat scrape
 -- fallback). Cleared when the integer skill value ticks up.
 -- Packet 0x29 path adapted from Jull256/skilluptracker (Mujihina original).
-local skill_frac      = T{}
+-- Stored in config.skill_frac so progress survives /logout when
+-- config.persist_frac is true (default). Helpers below mutate it.
+local skill_frac      = config.skill_frac
+local _frac_dirty_at  = 0   -- os.clock() of last unsaved frac change; 0 = clean
+local FRAC_SAVE_DEBOUNCE = 2.0  -- seconds; persist at most this often
+
+local function frac_get(sid)
+    return skill_frac[sid] or 0
+end
+
+local function frac_mark_dirty()
+    if not config.persist_frac then return end
+    -- Debounce disk writes; rapid skillups within FRAC_SAVE_DEBOUNCE coalesce.
+    local now = os.clock()
+    if _frac_dirty_at == 0 then _frac_dirty_at = now end
+    if (now - _frac_dirty_at) >= FRAC_SAVE_DEBOUNCE then
+        _frac_dirty_at = 0
+        settings.save()
+    end
+end
+
+local function frac_flush()
+    if _frac_dirty_at ~= 0 and config.persist_frac then
+        _frac_dirty_at = 0
+        settings.save()
+    end
+end
+
+-- Add tenths/10 to the running fractional. Wraps to 0 on >=1.0 overflow
+-- (the integer tick will arrive from memory).
+local function frac_add(sid, delta)
+    local nv = (skill_frac[sid] or 0) + delta
+    if nv >= 1.0 then nv = 0 end
+    -- Round to 1 decimal place to keep the persisted Lua table tidy.
+    nv = math.floor(nv * 10 + 0.5) / 10
+    skill_frac[sid] = nv
+    frac_mark_dirty()
+end
+
+local function frac_reset(sid)
+    if skill_frac[sid] ~= nil and skill_frac[sid] ~= 0 then
+        skill_frac[sid] = 0
+        frac_mark_dirty()
+    end
+end
+
 local _skillup_pkt_at = T{}  -- sid -> os.clock() of last packet write; text_in dedupes
 
 local CHAT_SKILL_NAMES = {
@@ -754,7 +806,7 @@ local function prepare(sid, magic, job_id, mjl)
     local last = skill_int_seen[sid]
     if last and cur > last then
         skill_tick_burst[sid] = os.clock()
-        skill_frac[sid] = 0
+        frac_reset(sid)
     end
     skill_int_seen[sid] = cur
 
@@ -777,7 +829,7 @@ local function prepare(sid, magic, job_id, mjl)
     -- Display value: integer from memory + any fractional points we've
     -- seen accumulate from chat since the last integer tick. Clamp the
     -- frac at 0.9 — if it ever reaches 1.0 the integer should have ticked.
-    local frac    = math.min(0.9, skill_frac[sid] or 0)
+    local frac    = math.min(0.9, frac_get(sid))
     local cur_eff = cur + frac
 
     local color   = tier_color_for(rank)
@@ -1051,6 +1103,16 @@ local function draw_settings()
         if imgui.Checkbox('Show capped skills', c_ref) then
             config.show_capped = c_ref[1]; save()
         end
+        local pf_ref = { config.persist_frac }
+        if imgui.Checkbox('Persist fractional progress (survives /logout)', pf_ref) then
+            config.persist_frac = pf_ref[1]
+            -- If user just turned persistence OFF, drop any stored frac so it
+            -- doesn't reload stale values on next login.
+            if not config.persist_frac then
+                for k, _ in pairs(config.skill_frac) do config.skill_frac[k] = nil end
+            end
+            save()
+        end
 
         imgui.Separator()
         imgui.Text('Skills to show')
@@ -1101,14 +1163,13 @@ ashita.events.register('packet_in', 'sp_packet_cb', function(e)
         local sid    = struct.unpack('L', e.data, 0x0C + 0x01)
         local tenths = struct.unpack('L', e.data, 0x10 + 0x01)
         if sid and tenths and sid > 0 and sid < 48 then
-            skill_frac[sid] = (skill_frac[sid] or 0) + (tenths or 0) / 10
-            if skill_frac[sid] >= 1.0 then skill_frac[sid] = 0 end
+            frac_add(sid, (tenths or 0) / 10)
             _skillup_pkt_at[sid] = os.clock()
         end
     elseif msgnum == 53 then
         local sid = struct.unpack('L', e.data, 0x0C + 0x01)
         if sid and sid > 0 and sid < 48 then
-            skill_frac[sid] = 0
+            frac_reset(sid)
             _skillup_pkt_at[sid] = os.clock()
         end
     end
@@ -1129,8 +1190,7 @@ ashita.events.register('text_in', 'sp_text_in', function(e)
     if not sid then return end
     if _skillup_pkt_at[sid] and (os.clock() - _skillup_pkt_at[sid]) < 1.5 then return end
     local delta = tonumber('0.' .. frac) or 0
-    skill_frac[sid] = (skill_frac[sid] or 0) + delta
-    if skill_frac[sid] >= 1.0 then skill_frac[sid] = 0 end
+    frac_add(sid, delta)
 end)
 
 ----------------------------------------------------------------
@@ -1173,6 +1233,21 @@ ashita.events.register('command', 'sp_command', function(e)
     elseif sub == 'capped' then
         config.show_capped = not config.show_capped; save()
         say('show_capped ' .. (config.show_capped and 'ON' or 'OFF'))
+    elseif sub == 'persistfrac' or sub == 'persist' then
+        local arg = (args[3] or 'toggle'):lower()
+        if arg == 'on' then
+            config.persist_frac = true
+        elseif arg == 'off' then
+            config.persist_frac = false
+            for k, _ in pairs(config.skill_frac) do config.skill_frac[k] = nil end
+        else
+            config.persist_frac = not config.persist_frac
+            if not config.persist_frac then
+                for k, _ in pairs(config.skill_frac) do config.skill_frac[k] = nil end
+            end
+        end
+        save()
+        say('persist_frac ' .. (config.persist_frac and 'ON' or 'OFF'))
     elseif sub == 'show' or sub == 'hide' then
         -- /prism show <name>  /prism hide <name>  -- toggle per-skill visibility by name match
         local target = (args[3] or ''):lower()
@@ -1203,6 +1278,7 @@ ashita.events.register('command', 'sp_command', function(e)
         say('  /prism mode crystals|donuts|pills -- display style')
         say('  /prism perrow 1..24               -- items per row')
         say('  /prism capped                     -- toggle showing capped skills')
+        say('  /prism persistfrac on|off|toggle  -- persist fractional skill progress')
         say('  /prism show <name>                -- show a specific skill (e.g. Elemental)')
         say('  /prism hide <name>                -- hide a specific skill')
         say('  /prism reset                      -- reset window position')
@@ -1212,3 +1288,10 @@ end)
 ashita.events.register('load', 'prism_load', function()
     say(('loaded v%s -- /prism settings to configure'):format(addon.version))
 end)
+
+-- Flush any debounced fractional progress on unload/zone/logout so we don't
+-- lose the last 0.1-0.9 of work to the 2-second save window.
+ashita.events.register('unload', 'prism_unload', function()
+    frac_flush()
+end)
+

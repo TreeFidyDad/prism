@@ -38,6 +38,7 @@ Skill capture adapted from [Jull256/skilluptracker](https://github.com/Jull256/s
 /prism mode crystals|donuts|pills   -- display style
 /prism perrow 1..24                 -- items per row
 /prism capped                       -- toggle showing capped skills
+/prism persistfrac on|off|toggle    -- persist fractional skill progress across /logout
 /prism show <name>                  -- show a specific skill (e.g. Elemental)
 /prism hide <name>                  -- hide a specific skill
 /prism reset                        -- reset window position
@@ -52,7 +53,7 @@ Open with `/prism` or `/pr`. All options persist to Ashita's per-character confi
 ## Notes
 
 - **Magic skills are gated by your main job's rank table** — sub-job magic skills are hidden by design (their caps are halved anyway).
-- **Fractional skill (e.g. 9.1) only flows via chat/packet** — the game's memory only exposes integers. If you log in mid-skillup, you'll see the integer until the next tick rolls in.
+- **Fractional skill (e.g. 9.1) only flows via chat/packet** — the game's memory only exposes integers. Prism saves your fractional progress to Ashita's per-character config (toggle in settings or `/prism persistfrac off`), so a `/logout` doesn't throw away the 0.1–0.9 you already earned.
 - Skill caps use rank slopes calibrated against low-level (`L≤9`) reference points; some piecewise interpolation remains.
 
 ## Acknowledgments
