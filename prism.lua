@@ -1,6 +1,6 @@
 addon.name      = 'prism'
 addon.author    = 'Blake & Watney'
-addon.version = '0.7.10'
+addon.version = '0.7.11'
 addon.desc      = 'Prism — floating skill overlay. Tier-colored crystals, donuts, or pills. Tracks combat, defense, magic & craft skill progress per main job.'
 addon.commands  = { '/prism', '/pr' }
 
@@ -68,7 +68,7 @@ local function normalize_config()
         config.display_mode = 'crystals'
     end
     if type(config.per_row) ~= 'number' then config.per_row = 3 end
-    config.per_row = math.max(1, math.min(24, math.floor(config.per_row)))
+    config.per_row = math.max(0, math.min(24, math.floor(config.per_row)))  -- 0 = "All" (dynamic)
     if type(config.scale) ~= 'number' then config.scale = 1.0 end
     config.scale = math.max(0.6, math.min(2.0, config.scale))
     if  config.sort_mode ~= 'default'
@@ -619,6 +619,138 @@ local SKILL_CRYSTAL_CELL_W = 78
 local SKILL_CRYSTAL_CELL_H = 128
 
 ----------------------------------------------------------------
+-- Geometry caches
+--
+-- The crystal and donut interiors are drawn as horizontal scanline
+-- strips. The span geometry (where each strip starts/ends) is identical
+-- every frame for a given scale -- only the colors and the fill height
+-- change as a skill animates. Recomputing the hex edge intersections and
+-- circle sqrt() for every strip, every skill, every frame was the bulk of
+-- the render cost (the crystal view especially: 11 glow shells + body =
+-- ~3000 edge tests per crystal). Precompute the strip offsets once per
+-- scale and the per-frame work collapses to plain AddRectFilled calls.
+----------------------------------------------------------------
+local SKILL_CRYSTAL_GLOW_STEPS = 10
+
+local crystal_geo_cache = {}
+local function get_crystal_geo(sc)
+    local key = ('%.4f'):format(sc)
+    local cached = crystal_geo_cache[key]
+    if cached then return cached end
+
+    local r        = SKILL_CRYSTAL_R * sc
+    local hw       = 18 * sc
+    local shoulder = r * 0.62
+    -- Hex centered on (0,0) so the spans are pure offsets from the live
+    -- crystal center; the renderer just translates by (cx, cy).
+    local v = {
+        { 0,    -r        },   -- 1: top
+        { hw,   -shoulder },    -- 2: upper-right
+        { hw,    shoulder },    -- 3: lower-right
+        { 0,     r        },   -- 4: bottom
+        { -hw,   shoulder },    -- 5: lower-left
+        { -hw,  -shoulder },    -- 6: upper-left
+    }
+    local function edge_x(a, b, yy)
+        local dy = b[2] - a[2]
+        if math.abs(dy) < 0.01 then return nil end
+        local t = (yy - a[2]) / dy
+        if t < -0.01 or t > 1.01 then return nil end
+        return a[1] + math.max(0, math.min(1, t)) * (b[1] - a[1])
+    end
+    local function hex_lr(verts, yy)
+        local lx = edge_x(verts[1], verts[6], yy) or edge_x(verts[6], verts[5], yy) or edge_x(verts[5], verts[4], yy)
+        local rx = edge_x(verts[1], verts[2], yy) or edge_x(verts[2], verts[3], yy) or edge_x(verts[3], verts[4], yy)
+        return lx, rx
+    end
+    local function inflate_hex(pad)
+        local iv = {}
+        for i = 1, 6 do
+            local dx, dy = v[i][1], v[i][2]   -- center is (0,0)
+            local d = math.sqrt(dx * dx + dy * dy)
+            if d < 0.01 then d = 0.01 end
+            iv[i] = { v[i][1] + dx * pad / d, v[i][2] + dy * pad / d }
+        end
+        return iv
+    end
+
+    -- Body scanline spans (1px rows), relative to center.
+    local body = {}
+    local y_top = math.floor(-r)
+    local y_bot = math.ceil(r)
+    for y = y_top, y_bot do
+        local lx, rx = hex_lr(v, y + 0.5)
+        if lx and rx then
+            body[#body + 1] = { lx = lx, rx = rx }
+        end
+    end
+
+    -- Glow shell scanline spans (2px rows), relative to center.
+    local glow = {}
+    local GLOW_PAD = 12 * sc
+    for step = 0, SKILL_CRYSTAL_GLOW_STEPS do
+        local t   = step / SKILL_CRYSTAL_GLOW_STEPS
+        local pad = GLOW_PAD * (1 - t)
+        local gv  = inflate_hex(pad)
+        local gy_top = math.floor(gv[1][2])
+        local gy_bot = math.ceil(gv[4][2])
+        for y = gy_top, gy_bot, 2 do
+            local lx, rx = hex_lr(gv, y + 1)
+            if lx and rx then
+                glow[#glow + 1] = { step = step, y = y, lx = lx, rx = rx }
+            end
+        end
+    end
+
+    cached = { r = r, body = body, glow = glow }
+    crystal_geo_cache[key] = cached
+    return cached
+end
+
+local donut_geo_cache = {}
+local function get_donut_geo(sc)
+    local key = ('%.4f'):format(sc)
+    local cached = donut_geo_cache[key]
+    if cached then return cached end
+
+    local r     = SKILL_DONUT_RADIUS * sc
+    local thick = SKILL_DONUT_THICK * sc
+    local r_out = r + thick * 0.5
+    local r_in  = r - thick * 0.5
+    -- Trough uses slightly smaller radii so the outline covers it; fill
+    -- uses slightly larger radii so the outline sits cleanly on top.
+    local r_out_t = r_out - 0.5
+    local r_in_t  = r_in + 0.5
+    local r_out_f = r_out + 1
+    local r_in_f  = math.max(0, r_in - 1)
+
+    local rows = {}
+    local y_top = math.floor(-r_out)
+    local y_bot = math.ceil(r_out)
+    for y = y_top, y_bot do
+        local dy  = y + 0.5
+        local dy2 = dy * dy
+        if dy2 < r_out_f * r_out_f then
+            rows[#rows + 1] = {
+                dy   = dy,
+                -- fill-mode spans
+                xo   = math.sqrt(r_out_f * r_out_f - dy2),
+                xi   = (dy2 < r_in_f * r_in_f) and math.sqrt(r_in_f * r_in_f - dy2) or 0,
+                xo_t = (dy2 < r_out_t * r_out_t) and math.sqrt(r_out_t * r_out_t - dy2) or 0,
+                xi_t = (dy2 < r_in_t * r_in_t) and math.sqrt(r_in_t * r_in_t - dy2) or 0,
+                -- trough-only spans (nil outer = row outside the trough ring)
+                t_xo = (dy2 < r_out_t * r_out_t) and math.sqrt(r_out_t * r_out_t - dy2) or nil,
+                t_xi = (dy2 < r_in_t * r_in_t) and math.sqrt(r_in_t * r_in_t - dy2) or 0,
+            }
+        end
+    end
+
+    cached = { r_out = r_out, rows = rows }
+    donut_geo_cache[key] = cached
+    return cached
+end
+
+----------------------------------------------------------------
 -- Crystal color is by RANK TIER (MMO-rarity vibe), not family.
 --   A+/A/A-  -> gold
 --   B+/B/B-  -> green
@@ -813,75 +945,67 @@ local function skill_donut(sid, pct, color, label, cur_str, cap_str, letter, eff
         return cx + t * math.cos(a)
     end
 
-    local y_top = math.floor(cy - r_out)
-    local y_bot = math.ceil(cy + r_out)
+    local geo    = get_donut_geo(sc)
+    local rows   = geo.rows
+    local base_y = math.floor(cy - r_out)
 
-    for y = y_top, y_bot do
-        local dy = y + 0.5 - cy
-        local dy2 = dy * dy
-        -- Trough uses slightly smaller radii so outline fully covers it.
-        -- Fill uses slightly larger radii so outline sits on top cleanly.
-        local r_out_t = r_out - 0.5
-        local r_in_t  = r_in + 0.5
-        local r_out_f = r_out + 1
-        local r_in_f  = math.max(0, r_in - 1)
+    for i = 1, #rows do
+        local row = rows[i]
+        local y   = base_y + (i - 1)
+        local dy  = row.dy
 
-        if dy2 < r_out_f * r_out_f then
-            if not has_fill then
-                if dy2 < r_out_t * r_out_t then
-                    local xo = math.sqrt(r_out_t * r_out_t - dy2)
-                    local xi = (dy2 < r_in_t * r_in_t) and math.sqrt(r_in_t * r_in_t - dy2) or 0
-                    if xi > 0.5 then
-                        dl:AddRectFilled({ cx - xo, y }, { cx - xi, y + 1 }, trough_col)
-                        dl:AddRectFilled({ cx + xi, y }, { cx + xo, y + 1 }, trough_col)
-                    else
-                        dl:AddRectFilled({ cx - xo, y }, { cx + xo, y + 1 }, trough_col)
-                    end
-                end
-            else
-                local xo = math.sqrt(r_out_f * r_out_f - dy2)
-                local xi = (dy2 < r_in_f * r_in_f) and math.sqrt(r_in_f * r_in_f - dy2) or 0
-                local xo_t = (dy2 < r_out_t * r_out_t) and math.sqrt(r_out_t * r_out_t - dy2) or 0
-                local xi_t = (dy2 < r_in_t * r_in_t) and math.sqrt(r_in_t * r_in_t - dy2) or 0
-
-                local strips
+        if not has_fill then
+            if row.t_xo then
+                local xo = row.t_xo
+                local xi = row.t_xi
                 if xi > 0.5 then
-                    strips = { { cx - xo, cx - xi }, { cx + xi, cx + xo } }
+                    dl:AddRectFilled({ cx - xo, y }, { cx - xi, y + 1 }, trough_col)
+                    dl:AddRectFilled({ cx + xi, y }, { cx + xo, y + 1 }, trough_col)
                 else
-                    strips = { { cx - xo, cx + xo } }
+                    dl:AddRectFilled({ cx - xo, y }, { cx + xo, y + 1 }, trough_col)
                 end
+            end
+        else
+            local xo, xi     = row.xo, row.xi
+            local xo_t, xi_t = row.xo_t, row.xi_t
 
-                local bx0 = boundary_x(a0, dy)
-                local bx1 = boundary_x(a1, dy)
+            local strips
+            if xi > 0.5 then
+                strips = { { cx - xo, cx - xi }, { cx + xi, cx + xo } }
+            else
+                strips = { { cx - xo, cx + xo } }
+            end
 
-                for _, s in ipairs(strips) do
-                    local sl, sr = s[1], s[2]
-                    local cuts = { sl }
-                    if bx0 and bx0 > sl + 0.5 and bx0 < sr - 0.5 then cuts[#cuts + 1] = bx0 end
-                    if bx1 and bx1 ~= bx0 and bx1 > sl + 0.5 and bx1 < sr - 0.5 then cuts[#cuts + 1] = bx1 end
-                    cuts[#cuts + 1] = sr
-                    table.sort(cuts)
+            local bx0 = boundary_x(a0, dy)
+            local bx1 = boundary_x(a1, dy)
 
-                    for ci = 1, #cuts - 1 do
-                        local cl, cr = cuts[ci], cuts[ci + 1]
-                        if cr - cl > 0.1 then
-                            local mx = (cl + cr) * 0.5
-                            local theta = math.atan2(dy, mx - cx)
-                            if is_filled(theta) then
-                                dl:AddRectFilled({ cl, y }, { cr, y + 1 }, fc)
-                            else
-                                local tl = math.max(cl, cx - xo_t)
-                                local tr = math.min(cr, cx + xo_t)
-                                if xi_t > 0.5 then
-                                    if tl < cx - xi_t then
-                                        dl:AddRectFilled({ tl, y }, { math.min(tr, cx - xi_t), y + 1 }, trough_col)
-                                    end
-                                    if tr > cx + xi_t then
-                                        dl:AddRectFilled({ math.max(tl, cx + xi_t), y }, { tr, y + 1 }, trough_col)
-                                    end
-                                elseif tr > tl then
-                                    dl:AddRectFilled({ tl, y }, { tr, y + 1 }, trough_col)
+            for _, s in ipairs(strips) do
+                local sl, sr = s[1], s[2]
+                local cuts = { sl }
+                if bx0 and bx0 > sl + 0.5 and bx0 < sr - 0.5 then cuts[#cuts + 1] = bx0 end
+                if bx1 and bx1 ~= bx0 and bx1 > sl + 0.5 and bx1 < sr - 0.5 then cuts[#cuts + 1] = bx1 end
+                cuts[#cuts + 1] = sr
+                table.sort(cuts)
+
+                for ci = 1, #cuts - 1 do
+                    local cl, cr = cuts[ci], cuts[ci + 1]
+                    if cr - cl > 0.1 then
+                        local mx = (cl + cr) * 0.5
+                        local theta = math.atan2(dy, mx - cx)
+                        if is_filled(theta) then
+                            dl:AddRectFilled({ cl, y }, { cr, y + 1 }, fc)
+                        else
+                            local tl = math.max(cl, cx - xo_t)
+                            local tr = math.min(cr, cx + xo_t)
+                            if xi_t > 0.5 then
+                                if tl < cx - xi_t then
+                                    dl:AddRectFilled({ tl, y }, { math.min(tr, cx - xi_t), y + 1 }, trough_col)
                                 end
+                                if tr > cx + xi_t then
+                                    dl:AddRectFilled({ math.max(tl, cx + xi_t), y }, { tr, y + 1 }, trough_col)
+                                end
+                            elseif tr > tl then
+                                dl:AddRectFilled({ tl, y }, { tr, y + 1 }, trough_col)
                             end
                         end
                     end
@@ -1018,32 +1142,8 @@ local function skill_crystal(sid, pct, color, label, cur_str, cap_str, letter, e
         { cx - hw, cy - shoulder },    -- 6: upper-left
     }
 
-    -- Scanline helper: left and right x of a 6-vertex hex at a given y.
-    local function edge_x(a, b, yy)
-        local dy = b[2] - a[2]
-        if math.abs(dy) < 0.01 then return nil end
-        local t = (yy - a[2]) / dy
-        if t < -0.01 or t > 1.01 then return nil end
-        return a[1] + math.max(0, math.min(1, t)) * (b[1] - a[1])
-    end
-    local function hex_lr(verts, yy)
-        local lx = edge_x(verts[1], verts[6], yy) or edge_x(verts[6], verts[5], yy) or edge_x(verts[5], verts[4], yy)
-        local rx = edge_x(verts[1], verts[2], yy) or edge_x(verts[2], verts[3], yy) or edge_x(verts[3], verts[4], yy)
-        return lx, rx
-    end
-    local function crystal_lr(yy) return hex_lr(v, yy) end
-
-    -- Build an inflated copy of the hex vertices (push each vertex outward).
-    local function inflate_hex(pad)
-        local iv = {}
-        for i = 1, 6 do
-            local dx, dy = v[i][1] - cx, v[i][2] - cy
-            local d = math.sqrt(dx * dx + dy * dy)
-            if d < 0.01 then d = 0.01 end
-            iv[i] = { v[i][1] + dx * pad / d, v[i][2] + dy * pad / d }
-        end
-        return iv
-    end
+    -- Static scanline geometry (glow shells + body spans) for this scale.
+    local geo = get_crystal_geo(sc)
 
     -- Tick burst: expanding hex outline fading over 500ms.
     local burst_t = skill_tick_burst[sid]
@@ -1069,35 +1169,28 @@ local function skill_crystal(sid, pct, color, label, cur_str, cap_str, letter, e
 
     -- Hex-shaped gradient glow: many concentric inflated hex shells drawn
     -- outer-to-inner with smoothly increasing alpha, creating a seamless
-    -- gradient that follows the crystal shape.
-    local GLOW_PAD   = 12 * sc
-    local GLOW_STEPS = 10
+    -- gradient that follows the crystal shape. Shell spans are precomputed
+    -- (see get_crystal_geo); only the per-tier colors are built here.
+    local GLOW_STEPS = SKILL_CRYSTAL_GLOW_STEPS
     local glow_colors = {}
     for step = 0, GLOW_STEPS do
         local t = step / GLOW_STEPS
         local alpha = 0.03 + t * 0.15
         glow_colors[step] = imgui.GetColorU32({ color[1], color[2], color[3], alpha })
     end
-    for step = 0, GLOW_STEPS do
-        local t = step / GLOW_STEPS
-        local pad = GLOW_PAD * (1 - t)
-        local gv = inflate_hex(pad)
-        local gc = glow_colors[step]
-        local gy_top = math.floor(gv[1][2])
-        local gy_bot = math.ceil(gv[4][2])
-        for y = gy_top, gy_bot, 2 do
-            local lx, rx = hex_lr(gv, y + 1)
-            if lx and rx then
-                dl:AddRectFilled({ lx, y }, { rx, y + 2 }, gc)
-            end
-        end
+    local gspans = geo.glow
+    for i = 1, #gspans do
+        local g = gspans[i]
+        dl:AddRectFilled({ cx + g.lx, cy + g.y }, { cx + g.rx, cy + g.y + 2 }, glow_colors[g.step])
     end
 
     -- Crystal body: trough + fill rendered as horizontal scanline strips.
     -- Each strip is a single AddRectFilled — zero triangle fans, zero
-    -- ghost lines, zero clipping math.
-    local y_top = math.floor(cy - r)
-    local y_bot = math.ceil(cy + r)
+    -- ghost lines, zero clipping math. Spans are precomputed per scale.
+    local body   = geo.body
+    local nrows  = #body
+    local y_top  = math.floor(cy - r)
+    local y_bot  = y_top + (nrows - 1)
     local trough_col = imgui.GetColorU32({ 0.06, 0.07, 0.10, 1.0 })
 
     -- Precompute fill gradient bands (bright/white at bottom → tier color
@@ -1118,16 +1211,17 @@ local function skill_crystal(sid, pct, color, label, cur_str, cap_str, letter, e
         end
     end
 
-    for y = y_top, y_bot do
-        local lx, rx = crystal_lr(y + 0.5)
-        if lx and rx then
-            if y >= fill_top_y and draw_pct > 0.005 then
-                local progress = math.max(0, math.min(1, (y_bot - y) / fill_range))
-                local bi = math.min(NUM_BANDS, math.floor(progress * NUM_BANDS + 0.5))
-                dl:AddRectFilled({ lx, y }, { rx, y + 1 }, bands[bi])
-            else
-                dl:AddRectFilled({ lx, y }, { rx, y + 1 }, trough_col)
-            end
+    for i = 1, nrows do
+        local e  = body[i]
+        local y  = y_top + (i - 1)
+        local lx = cx + e.lx
+        local rx = cx + e.rx
+        if y >= fill_top_y and draw_pct > 0.005 then
+            local progress = math.max(0, math.min(1, (y_bot - y) / fill_range))
+            local bi = math.min(NUM_BANDS, math.floor(progress * NUM_BANDS + 0.5))
+            dl:AddRectFilled({ lx, y }, { rx, y + 1 }, bands[bi])
+        else
+            dl:AddRectFilled({ lx, y }, { rx, y + 1 }, trough_col)
         end
     end
 
@@ -1460,7 +1554,7 @@ local function draw_frame()
     end
 
     if mode == 'donuts' then
-        local per_row = config.per_row
+        local per_row = (config.per_row == 0) and #items or config.per_row
         for i, item in ipairs(items) do
             local cap_str = item.cap and tostring(item.cap) or nil
             skill_donut(item.sid, item.pct, item.color, item.label,
@@ -1471,7 +1565,7 @@ local function draw_frame()
             end
         end
     elseif mode == 'crystals' then
-        local per_row = config.per_row
+        local per_row = (config.per_row == 0) and #items or config.per_row
         for i, item in ipairs(items) do
             local cap_str = item.cap and tostring(item.cap) or nil
             skill_crystal(item.sid, item.pct, item.color, item.label,
@@ -1589,27 +1683,36 @@ local function draw_settings()
 
         imgui.Separator()
         imgui.Text('Items per row')
-        -- SliderInt also wants a {int} ref table.
         local pr_max = math.max(1, last_item_count)
-        if config.per_row > pr_max then
+        local is_all = (config.per_row == 0)
+        if not is_all and config.per_row > pr_max then
             config.per_row = pr_max; save()
         end
-        local pr_ref = { config.per_row }
-        imgui.PushItemWidth(160)
-        if imgui.SliderInt('##sp_perrow', pr_ref, 1, pr_max) then
-            config.per_row = math.max(1, math.min(pr_max, math.floor(pr_ref[1])))
-            save()
+        if is_all then
+            imgui.PushItemWidth(160)
+            local dummy_ref = { pr_max }
+            imgui.SliderInt('##sp_perrow', dummy_ref, 1, pr_max)
+            imgui.PopItemWidth()
+            imgui.SameLine()
+            imgui.TextDisabled(('(All = %d)'):format(pr_max))
+        else
+            local pr_ref = { config.per_row }
+            imgui.PushItemWidth(160)
+            if imgui.SliderInt('##sp_perrow', pr_ref, 1, pr_max) then
+                config.per_row = math.max(1, math.min(pr_max, math.floor(pr_ref[1])))
+                save()
+            end
+            imgui.PopItemWidth()
+            imgui.SameLine()
+            imgui.TextDisabled(('(%d of %d)'):format(config.per_row, pr_max))
         end
-        imgui.PopItemWidth()
-        imgui.SameLine()
-        imgui.TextDisabled(('(%d of %d)'):format(config.per_row, pr_max))
         if imgui.SmallButton('1##sp_pr1') then config.per_row = 1; save() end
         imgui.SameLine()
         if imgui.SmallButton('2##sp_pr2') then config.per_row = math.min(2, pr_max); save() end
         imgui.SameLine()
         if imgui.SmallButton('3##sp_pr3') then config.per_row = math.min(3, pr_max); save() end
         imgui.SameLine()
-        if imgui.SmallButton('All##sp_prall') then config.per_row = pr_max; save() end
+        if imgui.SmallButton('All##sp_prall') then config.per_row = 0; save() end
 
         imgui.Separator()
         imgui.Text('Scale')
