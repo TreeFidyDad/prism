@@ -150,12 +150,13 @@ local SKILL_NAMES = {
     [28]='Guard', [29]='Evasion', [30]='Shield', [31]='Parry',
     [32]='Divine', [33]='Healing', [34]='Enhancing', [35]='Enfeebling',
     [36]='Elemental', [37]='Dark', [38]='Summoning', [39]='Ninjutsu',
+    [40]='Singing', [41]='String', [42]='Wind',
     -- crafting / gathering (chat-line only -- no rank table, cap from engine)
     [48]='Fishing', [49]='Wood', [50]='Smith', [51]='Gold', [52]='Cloth',
     [53]='Leather', [54]='Bone', [55]='Alchemy', [56]='Cooking',
 }
 
-local MAGIC_SKILL_IDS = { 33, 34, 35, 32, 36, 37, 38, 39 }
+local MAGIC_SKILL_IDS = { 33, 34, 35, 32, 36, 37, 38, 39, 40, 41, 42 }
 
 -- Skill IDs grouped by the four overlay categories Prism shows.
 -- combat:  weapons + ranged. Filtered by JOB_SKILL_RANK[job].
@@ -165,7 +166,7 @@ local MAGIC_SKILL_IDS = { 33, 34, 35, 32, 36, 37, 38, 39 }
 local SKILL_CATEGORIES = {
     combat  = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 25, 26, 27 },
     defense = { 28, 29, 30, 31 },
-    magic   = { 32, 33, 34, 35, 36, 37, 38, 39 },
+    magic   = { 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42 },
     craft   = { 48, 49, 50, 51, 52, 53, 54, 55, 56 },
 }
 
@@ -224,7 +225,7 @@ local CHAT_PALETTE = {
 -- Cast-gated magic skills only get skillups from casting (self/party
 -- targets). All offensive magic is mob-level-gated like weapons, so we
 -- show "Lv N+" for them just like combat skills.
-local SKILL_IS_CAST_GATED = { [33]=true, [34]=true }
+local SKILL_IS_CAST_GATED = { [33]=true, [34]=true, [40]=true, [41]=true, [42]=true }
 
 local RANK_LETTERS = {
     [0]='A+', [1]='A', [2]='A-', [3]='B+', [4]='B', [5]='B-',
@@ -290,6 +291,7 @@ local JOB_MAGIC_SKILL_RANK = {
     [5]  = { [35]=0, [34]=3, [36]=6, [33]=8, [37]=10, [32]=10 }, -- Red Mage: Enf/Enh/Ele/Hea/Dark/Div
     [7]  = { [32]=3, [33]=7, [34]=9 },                   -- Paladin: Div/Hea/Enh
     [8]  = { [37]=2, [36]=3, [35]=7 },                   -- Dark Knight: Dark/Ele/Enf
+    [10] = { [40]=7, [41]=7, [42]=7 },                     -- Bard: Singing/String/Wind (all C rank)
     [13] = { [39]=2 },                                    -- Ninja: Ninjutsu
     [15] = { [38]=2 },                                    -- Summoner: Summoning
 }
@@ -310,31 +312,42 @@ local function skill_cap_for(rank_idx, level)
     if ref then
         local L = math.floor(level)
         if L < 1 then L = 1 end
-        if L > 75 then L = 75 end
-        local v = ref[L]
-        if v and v > 0 then return v end
+        if L <= 75 then
+            local v = ref[L]
+            if v and v > 0 then return v end
+        else
+            -- Extrapolate past level 75 using the slope of the last segment.
+            local v75 = ref[75]
+            local v74 = ref[74]
+            if v75 and v74 then
+                local end_slope = v75 - v74
+                return v75 + end_slope * (L - 75)
+            end
+            if v75 then return v75 end
+        end
     end
     local slope = RANK_SLOPES[rank_idx]
     if not slope then return nil end
     return math.floor(5 + slope * (level - 1) + 0.5)
 end
 
--- Smallest level L (1..75) at which skill_cap_for(rank, L) >= cur.
+-- Smallest level L at which skill_cap_for(rank, L) >= cur.
+-- Searches up to 99 to handle servers with level caps above 75.
 local function effective_level_for(rank_idx, cur)
     if not rank_idx or not cur then return nil end
-    for L = 1, 75 do
+    for L = 1, 99 do
         local c = skill_cap_for(rank_idx, L)
         if c and c >= cur then return L end
     end
-    return 75
+    return 99
 end
 
 -- Smallest mob level whose rank-curve cap exceeds cur. For combat skills
 -- this is the minimum mob level you can still get skillups from. Returns
--- nil at the 75 ceiling.
+-- nil at the ceiling.
 local function min_mob_level_for(rank_idx, cur)
     if not rank_idx or not cur then return nil end
-    for L = 1, 75 do
+    for L = 1, 99 do
         local c = skill_cap_for(rank_idx, L)
         if c and c > cur then return L end
     end
@@ -514,6 +527,8 @@ local CHAT_SKILL_NAMES = {
     ['divine magic']=32, ['healing magic']=33, ['enhancing magic']=34,
     ['enfeebling magic']=35, ['elemental magic']=36, ['dark magic']=37,
     ['summoning magic']=38, ['ninjutsu']=39,
+    ['singing']=40, ['stringed instrument']=41, ['string instrument']=41,
+    ['wind instrument']=42,
     ['fishing']=48, ['woodworking']=49, ['smithing']=50, ['goldsmithing']=51,
     ['clothcraft']=52, ['leathercraft']=53, ['bonecraft']=54,
     ['alchemy']=55, ['cooking']=56,
@@ -901,7 +916,7 @@ local function skill_donut(sid, pct, color, label, cur_str, cap_str, letter, eff
     local r_in   = r - thick * 0.5
     local top_pad = math.ceil(thick * 0.5) + 29
     local cw     = math.max(SKILL_DONUT_CELL_W * sc, 2 * r_out + 16)
-    local text_block_h = 52
+    local text_block_h = 62
     local ch     = top_pad + 2 * r_out + 4 + text_block_h
     local cx     = x0 + cw * 0.5
     local cy     = y0 + r_out + top_pad
@@ -1125,7 +1140,7 @@ local function skill_crystal(sid, pct, color, label, cur_str, cap_str, letter, e
     local r      = SKILL_CRYSTAL_R * sc
     local hw     = 18 * sc
     local cw     = math.max(SKILL_CRYSTAL_CELL_W * sc, hw * 2 + 16)
-    local text_block_h = 52
+    local text_block_h = 62
     local top_pad = 34
     local ch     = top_pad + 2 * r + 6 + text_block_h
     local cx     = x0 + cw * 0.5
@@ -1413,7 +1428,17 @@ local function prepare(sid, category, job_id, mjl)
     -- matches what FFXI shows in /checkparam and avoids drift from our
     -- static tables when a server (e.g. HorizonXI) ranks a skill differently
     -- than retail canonical.
-    local cap = (engine_cap and engine_cap > 0) and engine_cap or skill_cap_for(rank, mjl)
+    local using_engine_cap = (engine_cap and engine_cap > 0)
+    local cap = using_engine_cap and engine_cap or skill_cap_for(rank, mjl)
+
+    -- If we're using the fallback table cap and the skill already exceeds it,
+    -- the table is likely outdated (merit points, server-specific adjustments,
+    -- or level > 75 extrapolation inaccuracy). Bump cap up so we don't
+    -- falsely flag the skill as capped.
+    if cap and not using_engine_cap and cur > cap then
+        cap = cur + 1
+    end
+
     local letter  = RANK_LETTERS[rank]
     if cap and cur >= cap and not config.show_capped then return nil end
 
