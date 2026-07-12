@@ -256,6 +256,30 @@ local CAP_REF = {
     [11] = { 4,6,8,10,13,15,17,20,22,24,27,29,31,33,36,38,40,43,45,47,50,52,54,56,59,61,63,66,68,70,73,75,77,79,82,84,86,89,91,93,96,98,100,102,105,107,109,112,114,116,120,124,128,133,137,141,146,150,154,159,161,163,165,167,169,171,173,175,177,179,181,183,185,187,189 }, -- F
 }
 
+-- Retail per-rank caps for levels 76..99. CAP_REF only tabulates the
+-- HorizonXI 75-cap era (levels 1..75); on servers whose level cap is above
+-- 75 we index this table instead of linearly projecting the 74->75 slope.
+-- That projection badly under-reports at high level -- e.g. a rank-2 skill
+-- (BLM Dark) read 389 at L99 instead of the real 417, and the cur>cap clamp
+-- in prepare() then masked it by making the shown cap track current skill+1.
+-- Source: BGWiki / LandSandBoat skill_caps (retail curve; continues each
+-- CAP_REF row's own column with no discontinuity at the 75/76 boundary).
+-- Index = same rank index as CAP_REF; array index = level - 75 (1..24).
+local CAP_REF_76 = {
+    [0]  = { 281,286,291,296,301,307,313,319,325,331,337,343,349,355,361,368,375,382,389,396,403,410,417,424 }, -- A+
+    [1]  = { 274,279,284,289,294,300,306,312,318,324,330,336,342,348,354,361,368,375,382,389,396,403,410,417 }, -- A (HX uses A-)
+    [2]  = { 274,279,284,289,294,300,306,312,318,324,330,336,342,348,354,361,368,375,382,389,396,403,410,417 }, -- A-
+    [3]  = { 261,266,271,276,281,287,293,299,305,311,317,323,329,335,341,348,355,362,369,376,383,390,397,404 }, -- B+
+    [4]  = { 255,260,265,270,275,281,287,293,299,305,311,317,323,329,335,342,349,356,363,370,377,384,391,398 }, -- B
+    [5]  = { 245,250,255,260,265,271,277,283,289,295,301,307,313,319,325,332,339,346,353,360,367,374,381,388 }, -- B-
+    [6]  = { 235,240,245,250,255,261,267,273,279,285,291,297,303,309,315,322,329,336,343,350,357,364,371,378 }, -- C+
+    [7]  = { 230,235,240,245,250,256,262,268,274,280,286,292,298,304,310,317,324,331,338,345,352,359,366,373 }, -- C
+    [8]  = { 225,230,235,240,245,251,257,263,269,275,281,287,293,299,305,312,319,326,333,340,347,354,361,368 }, -- C-
+    [9]  = { 214,218,222,226,230,235,240,245,250,255,260,265,270,275,280,286,292,298,304,310,316,322,328,334 }, -- D
+    [10] = { 203,206,209,212,215,219,223,227,231,235,239,243,247,251,255,260,265,270,275,280,285,290,295,300 }, -- E
+    [11] = { 191,193,195,197,199,202,205,208,211,214,217,220,223,226,229,233,237,241,245,249,253,257,261,265 }, -- F
+}
+
 -- HorizonXI-calibrated job→skill ranks. Includes combat (1-12), ranged
 -- (25-27) and defense (28-31) all in one table — these are the skills
 -- the job has main-job access to. Missing entry = skill not granted by
@@ -316,7 +340,23 @@ local function skill_cap_for(rank_idx, level)
             local v = ref[L]
             if v and v > 0 then return v end
         else
-            -- Extrapolate past level 75 using the slope of the last segment.
+            -- Past level 75 (servers whose cap exceeds the HorizonXI 75 era):
+            -- read the tabulated retail 76..99 caps. Linearly projecting the
+            -- 74->75 slope badly under-reports (e.g. an A-rank skill would
+            -- read 389 at L99 instead of the real 417), so prefer the table.
+            local post = CAP_REF_76[rank_idx]
+            if post then
+                local i = L - 75
+                local v = post[i]
+                if v and v > 0 then return v end
+                -- Beyond the tabulated ceiling: extrapolate the last segment.
+                local n = #post
+                if n >= 2 and post[n] and post[n - 1] then
+                    return post[n] + (post[n] - post[n - 1]) * (i - n)
+                end
+                if post[n] then return post[n] end
+            end
+            -- Fallback for any rank lacking a 76+ row: old linear projection.
             local v75 = ref[75]
             local v74 = ref[74]
             if v75 and v74 then
