@@ -286,6 +286,9 @@ local CAP_REF_76 = {
 -- this main job (e.g. DRK does not see Polearm/Katana/etc).
 -- Source: HorizonXI server data, transcribed from /skill-caps reference.
 -- Post-ToAU jobs (BLU/COR/PUP/DNC/SCH/GEO/RUN) are omitted; HX is 75-cap era.
+-- HX quirk: NIN Katana & Throwing are A- here (rank 2), not retail's post-2014
+-- A+. Verified vs the HorizonXI wiki JobSkills data (both cap 269 @ L75). Do
+-- not "correct" these to A+ against a modern retail wiki.
 local JOB_SKILL_RANK = {
     [1]  = { [6]=0, [5]=2, [4]=3, [7]=3, [12]=4, [3]=4, [11]=5, [2]=5, [8]=5, [1]=9, [25]=9, [26]=9, [27]=9, [30]=6, [29]=7, [31]=8 },  -- Warrior
     [2]  = { [1]=0, [12]=4, [11]=6, [27]=10, [28]=2, [29]=3, [31]=10 },                                                                  -- Monk
@@ -299,7 +302,7 @@ local JOB_SKILL_RANK = {
     [10] = { [2]=5, [12]=6, [3]=8, [11]=9, [27]=10, [29]=9, [31]=10 },                                                                    -- Bard
     [11] = { [5]=5, [2]=5, [3]=9, [11]=10, [25]=2, [26]=2, [27]=8, [29]=10 },                                                             -- Ranger
     [12] = { [10]=0, [8]=5, [3]=6, [11]=10, [2]=10, [25]=6, [27]=6, [31]=2, [29]=3 },                                                     -- Samurai
-    [13] = { [9]=0, [2]=6, [3]=7, [10]=8, [11]=10, [1]=10, [27]=0, [26]=7, [25]=10, [29]=2, [31]=2 },                                     -- Ninja
+    [13] = { [9]=2, [2]=6, [3]=7, [10]=8, [11]=10, [1]=10, [27]=2, [26]=7, [25]=10, [29]=2, [31]=2 },                                     -- Ninja
     [14] = { [8]=0, [12]=5, [3]=8, [11]=10, [2]=10, [31]=7, [29]=8 },                                                                     -- Dragoon
     [15] = { [12]=4, [11]=6, [2]=10, [29]=10 },                                                                                            -- Summoner
 }
