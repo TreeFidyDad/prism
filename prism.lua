@@ -1987,10 +1987,16 @@ end)
 -- OFF so we don't double-print for users running skilluptracker too.
 ----------------------------------------------------------------
 local function _cap_for_sid(sid)
-    -- Prefer the engine's reported cap (covers defensive 28-31 and crafting
-    -- 48+ which have no static rank tables; also covers HorizonXI rank
-    -- divergence from retail). Static rank+CAP_REF math is the fallback
-    -- for skills the engine doesn't expose a cap for.
+    -- Crafts/gathering (48+) live in a separate memory array (GetCraftSkill)
+    -- with no static rank tables, so read their cap from the craft accessor.
+    -- GetCombatSkill doesn't know about them and would leave the cap as '?'.
+    if CRAFT_SID_TO_IDX[sid] then
+        local _, _, craft_cap = get_craft_skill(sid)
+        return craft_cap
+    end
+    -- Prefer the engine's reported cap (covers defensive 28-31; also covers
+    -- HorizonXI rank divergence from retail). Static rank+CAP_REF math is the
+    -- fallback for skills the engine doesn't expose a cap for.
     local _, _, engine_cap = get_combat_skill(sid)
     if engine_cap and engine_cap > 0 then return engine_cap end
     local pl = AshitaCore:GetMemoryManager():GetPlayer()
@@ -2007,8 +2013,14 @@ local function _cap_for_sid(sid)
     return skill_cap_for(rank, mjl)
 end
 
--- Read current integer skill from memory. Combat skills 1..47.
+-- Read current integer skill from memory. Combat skills 1..47 come from
+-- GetCombatSkill; crafts/gathering (48+) live in the separate GetCraftSkill
+-- array, so route those through get_craft_skill or they'd read as 0.
 local function _cur_int_for_sid(sid)
+    if CRAFT_SID_TO_IDX[sid] then
+        local cur = get_craft_skill(sid)
+        return cur or 0
+    end
     local ok, v = pcall(function()
         local pl = AshitaCore:GetMemoryManager():GetPlayer()
         local sk = pl and pl:GetCombatSkill(sid)
